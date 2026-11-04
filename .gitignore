@@ -17,3 +17,6 @@ env/
 .DS_Store
 .idea/
 .vscode/
+
+# Deployment-specific (not for repo)
+ibalance-backend.service
