@@ -1,0 +1,41 @@
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy on server
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
+            'bash ~/backend/deploy.sh'
+
+      - name: Health check
+        run: |
+          for i in 1 2 3 4 5; do
+            if curl -sf "http://${{ secrets.SERVER_HOST }}:8501/health"; then
+              echo ""
+              echo "Backend healthy"
+              exit 0
+            fi
+            echo "retry $i..."
+            sleep 3
+          done
+          echo "Backend health check failed"
+          exit 1
