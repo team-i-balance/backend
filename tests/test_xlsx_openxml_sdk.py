@@ -162,5 +162,7 @@ def test_landline_numbers_are_phones():
     found = Detector(None).detect("서울 02-234-5678, 경기 031-234-5678, 인터넷 070-1234-5678, 제주 064 712 3456")
     assert sorted(d["type"] for d in found) == ["PHONE"] * 4
     # Not phones: dates, account-like long groups, short groups.
-    for text in ("2026-02-15", "123-456-789012", "053-1234", "02-12-3456"):
+    for text in ("2026-02-15", "123-456-789012", "053-1234", "02-12-3456",
+                 # Unassigned prefixes are reference numbers, not area codes.
+                 "034-123-4567", "045-1234-5678", "065 123 4567", "035-234-5678"):
         assert [d for d in Detector(None).detect(text) if d["type"] == "PHONE"] == [], text
