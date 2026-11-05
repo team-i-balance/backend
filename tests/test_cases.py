@@ -39,6 +39,14 @@ def detail(client, case_id):
     return response.json()
 
 
+def principal(client):
+    """Expected `by` for the default client's runtime-issued security token."""
+    from app.auth import token_label
+
+    token = client.headers["Authorization"].split(" ", 1)[1]
+    return f"security-dev:{token_label(token)}"
+
+
 def page(client, queue="required", **params):
     response = client.get("/cases", params={"queue": queue, **params})
     assert response.status_code == 200
@@ -93,7 +101,7 @@ def test_close_detail_reopen_reclose_preserves_history_and_event(client, conclus
     assert closed["close"]["cause"] == cause
     assert closed["close"]["memo"] == "판단 근거"
     assert closed["close"]["rule"] == "이름 → 태그"
-    assert closed["close"]["by"] == "unauthenticated"
+    assert closed["close"]["by"] == principal(client)
     assert start <= datetime.fromisoformat(closed["close"]["at"]) <= end
     assert detail(client, case_id) == closed
     assert page(client, "optional")["items"] == []
@@ -128,7 +136,7 @@ def test_server_reviewer_dependency_ignores_caller_header(client):
     case_id = new_case(client)
     response = client.post(f"/cases/{case_id}/close", headers={"X-Reviewer": "fake-admin"},
                            json={"conclusion": "legit", "memo": "사유 확인"})
-    assert response.json()["close"]["by"] == "unauthenticated"
+    assert response.json()["close"]["by"] == principal(client)
     client.app.dependency_overrides[get_reviewer] = lambda: "verified-reviewer-42"
     try:
         response = client.post(f"/cases/{case_id}/reopen")
@@ -201,7 +209,7 @@ def test_bulk_close_only_optional_cases_and_records_same_server_actor(client):
         assert result["status"] == "closed"
         assert result["close"]["conclusion"] == "legit"
         assert result["close"]["memo"] == "사유 확인 — 업무 범위 내 사용"
-        assert result["close"]["by"] == "unauthenticated"
+        assert result["close"]["by"] == principal(client)
         assert len(result["history"]) == 1
     assert client.post("/cases/close-bulk", json={"ids": ids, "conclusion": "legit"}).status_code == 409
     assert all(len(detail(client, case_id)["history"]) == 1 for case_id in ids)

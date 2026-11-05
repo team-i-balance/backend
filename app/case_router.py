@@ -1,21 +1,24 @@
-"""Security console case review endpoints (authentication tracked in #10)."""
+"""Security console case review endpoints.
+
+The whole router is mounted behind `require_security` in main.py (issue #45).
+"""
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from app import case_crud
+from app.auth import security_principal
 from app.case_schemas import (
     CaseBulkCloseIn, CaseBulkResult, CaseCloseIn, CaseDetail, CaseId, CasePage, CaseQueue,
 )
 
 
-def get_reviewer() -> str:
-    """Replace with the verified security-team principal when #10 lands.
+def get_reviewer(principal: Annotated[str, Depends(security_principal)]) -> str:
+    """The verified security-team principal (token label, never the raw token).
 
-    Until then, never fabricate a human identity or trust a client-sent name.
-    This marker explicitly records that the caller was not authenticated.
+    Never trust a client-sent name (body or header) for the audit trail.
     """
-    return "unauthenticated"
+    return principal
 
 
 def _no_store(response: Response) -> None:
