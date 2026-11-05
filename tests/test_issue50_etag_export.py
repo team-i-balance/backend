@@ -60,6 +60,18 @@ def test_latest_200_when_no_match(client, published, value):
     assert r.headers["ETag"] == published
 
 
+@pytest.mark.parametrize("make", [
+    lambda sha: f'"other,{sha},more"',      # comma inside one quoted tag (Codex P2)
+    lambda sha: f'W/"x,{sha}"',
+    lambda sha: f'"a", "b,{sha}"',
+    lambda sha: f'"{sha}',                   # unterminated quote
+    lambda sha: f'"x"{sha}',                 # junk after a quoted tag
+])
+def test_latest_quoted_commas_do_not_split(client, published, make):
+    r = client.get("/policy/latest", headers={"If-None-Match": make(_sha(client))})
+    assert r.status_code == 200
+
+
 def test_latest_200_after_new_publish(client, published):
     client.post("/policy/publish", json={"payload": _payload()})
     r = client.get("/policy/latest", headers={"If-None-Match": published})
@@ -70,6 +82,9 @@ def test_etag_helpers():
     assert quote_etag("sha256:ab") == '"sha256:ab"'
     assert if_none_match_hits(None, "sha256:ab") is False
     assert if_none_match_hits('"sha256:ab"', '"sha256:ab"') is True  # current may be quoted
+    assert if_none_match_hits('"other,sha256:ab,more"', "sha256:ab") is False
+    assert if_none_match_hits('"x,y", W/"sha256:ab"', "sha256:ab") is True
+    assert if_none_match_hits('sha256:zz, sha256:ab', "sha256:ab") is True
 
 
 # --- /logs/export pagination ---------------------------------------------------

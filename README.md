@@ -19,11 +19,11 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | POST   | `/files/sanitize` | api | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
 | GET    | `/files/{work_id}/download` | api | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
 | POST   | `/files/{work_id}/restore` | api | 파일 매핑으로 AI 답변 복원; 만료 전까지 여러 번 |
-| GET    | `/cases` | 없음(인증 미연결) | 필수·선택 검토 및 종결 건 목록, 커서 페이지 이동 |
-| GET    | `/cases/{id}` | 없음(인증 미연결) | 이벤트 메타데이터와 판단·처리 이력 |
-| POST   | `/cases/{id}/close` | 없음(인증 미연결) | 위반·예외 인정·오탐으로 종결 |
-| POST   | `/cases/{id}/reopen` | 없음(인증 미연결) | 이전 이력을 유지하고 다시 열기 |
-| POST   | `/cases/close-bulk` | 없음(인증 미연결) | 선택 검토 건을 일괄 ‘문제 없음’으로 종결 |
+| GET    | `/cases` | security | 필수·선택 검토 및 종결 건 목록, 커서 페이지 이동 |
+| GET    | `/cases/{id}` | security | 이벤트 메타데이터와 판단·처리 이력 |
+| POST   | `/cases/{id}/close` | security | 위반·예외 인정·오탐으로 종결 |
+| POST   | `/cases/{id}/reopen` | security | 이전 이력을 유지하고 다시 열기 |
+| POST   | `/cases/close-bulk` | security | 선택 검토 건을 일괄 ‘문제 없음’으로 종결 |
 | GET    | `/policy/latest` | api | 최신 서명 번들. `ETag: "sha256:…"`, `If-None-Match`가 맞으면 304 |
 | GET    | `/policy/history` | security | 발행된 번들 목록(최신순): 버전·`sha256`·저장 시각·규칙 수 |
 | GET    | `/policy/acks` | security | PC 적용/거부 집계(`?version=N`으로 한 버전만) |
@@ -32,11 +32,9 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | PUT    | `/policy/draft` | security | If-Match로 동시 수정을 확인하고 초안 전체 저장 |
 | POST   | `/policy/publish` | security | 저장된 초안 또는 직접 전달한 payload 서명·발행 |
 
-`/cases*`는 현재 라우터에 토큰 의존성이 없습니다(처리자는 `unauthenticated`로 기록). 보안팀 인증 연결은 #10 후속 작업입니다.
-
 파일 API의 요청·응답, 오류 코드, 내부 AI 전송 연결 방법은 [파일 API 문서](docs/file-api.md)를 참고하세요.
 검토 대상 기준, 요청·응답과 콘솔 연결 방법은 [보안팀 검토 API 문서](docs/case-api.md)를 참고하세요.
-검토 상태는 기존 `LOG_DB_PATH`에 영구 저장합니다. 인증 연결 전 처리자는 `unauthenticated`로 기록합니다.
+검토 상태는 기존 `LOG_DB_PATH`에 영구 저장합니다. 처리자는 검증된 security 토큰의 라벨로 기록합니다(#45 이전 이력은 `unauthenticated`).
 기존 텍스트·로그 API를 포함한 전체 명세는 서버의 `/docs`에서 확인할 수 있습니다.
 최근 7일 집계와 1,000건 이상의 목록 조회는 [로그 통계·페이지 넘김 문서](docs/log-stats-api.md)를 참고하세요.
 원문 전송 후 사유 제출 흐름, 추가 응답 필드와 재시도 규칙은 [직원 사유 API 문서](docs/event-reason-api.md)를 참고하세요.
