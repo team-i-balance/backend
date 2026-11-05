@@ -93,6 +93,27 @@ class SlmAdapterTests(unittest.TestCase):
         self.assertEqual(slm._type('X2'), 'CONFIDENTIAL')
         self.assertEqual(slm._type('P-NAME'), 'NAME')
 
+    def test_duplicate_or_fixed_label_rejected(self):
+        slm = SlmSpanDetector.__new__(SlmSpanDetector)
+        slm.fixed = [{'id': 'P-SENS', 'label': '개인 민감정보', 'grade': 'C'}]
+        with self.assertRaises(ValueError):
+            slm.set_policy([{'id': 'X1', 'label': '개인 민감정보', 'description': '', 'grade': 'S'}])
+        with self.assertRaises(ValueError):
+            slm.set_policy([{'id': 'X1', 'label': '계약 금액', 'grade': 'S'},
+                            {'id': 'X2', 'label': '계약 금액', 'grade': 'C'}])
+
+    def test_long_unpunctuated_text_is_windowed(self):
+        import re
+        slm = SlmSpanDetector.__new__(SlmSpanDetector)
+        slm.splitter = lambda t: ((m.group(), m.start(), m.end()) for m in re.finditer(r'\S+', t))
+        text = ' '.join(f'w{i}' for i in range(450))
+        chunks = slm._chunks(text)
+        self.assertGreater(len(chunks), 2)
+        self.assertTrue(all(len(c.split()) <= 200 for _, c in chunks))
+        for off, c in chunks:
+            self.assertEqual(text[off:off + len(c)], c)
+        self.assertTrue(text.endswith(chunks[-1][1]))  # tail is covered
+
     def test_grading_of_slm_types(self):
         self.assertEqual(decide_grade(['INTERNAL']), Grade.sensitive)
         self.assertEqual(decide_grade(['CONFIDENTIAL']), Grade.confidential)

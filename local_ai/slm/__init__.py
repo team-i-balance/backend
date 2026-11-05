@@ -31,6 +31,8 @@ PRIORITY = ["PASSWORD", "API_KEY", "ACCESS_TOKEN", "CONFIDENTIAL", "SENSITIVE", 
 def _rank(kind: str) -> int:
     return PRIORITY.index(kind) if kind in PRIORITY else len(PRIORITY)
 CHUNK_WORDS = 200
+# Overlap between windows when one sentence alone exceeds CHUNK_WORDS.
+CHUNK_OVERLAP = 20
 _SENT_END = re.compile(r"(?<=[.!?。])\s+|\n+")
 
 
@@ -60,11 +62,21 @@ class SlmSpanDetector:
         self.set_policy(load_policy(policy or HERE / "policy.example.json"))
 
     def set_policy(self, rules: list[dict]) -> None:
-        """Swap policy rules; new rules apply without retraining."""
-        self.rules = {r["id"]: r for r in list(rules) + self.fixed}
-        self.label2id: dict[str, str] = {}
-        for r in self.rules.values():
-            self.label2id.setdefault(r["label"], r["id"])
+        """Swap policy rules; new rules apply without retraining.
+
+        The model returns labels, so each label must map to exactly one rule: a duplicate
+        label (or one reusing a fixed label) would silently re-grade detections.
+        """
+        all_rules = list(self.fixed) + list(rules)
+        label2id: dict[str, str] = {}
+        ids: set[str] = set()
+        for r in all_rules:
+            if r["label"] in label2id or r["id"] in ids:
+                raise ValueError("policy rule labels and ids must be unique and not reuse fixed labels")
+            label2id[r["label"]] = r["id"]
+            ids.add(r["id"])
+        self.rules = {r["id"]: r for r in all_rules}
+        self.label2id = label2id
 
     def _type(self, rule_id: str) -> str:
         return FIXED_TYPES.get(rule_id) or RULE_TYPES[self.rules[rule_id]["grade"]]
@@ -72,9 +84,9 @@ class SlmSpanDetector:
     def _chunks(self, text: str):
         pieces, pos = [], 0
         for m in _SENT_END.finditer(text):
-            pieces.append((pos, text[pos:m.start()]))
+            pieces.extend(self._split_long(pos, text[pos:m.start()]))
             pos = m.end()
-        pieces.append((pos, text[pos:]))
+        pieces.extend(self._split_long(pos, text[pos:]))
         out, cur, end, n = [], None, 0, 0
         for st, p in pieces:
             w = sum(1 for _ in self.splitter(p))
@@ -87,6 +99,19 @@ class SlmSpanDetector:
         if cur is not None:
             out.append((cur, text[cur:end]))
         return [(st, c) for st, c in out if c.strip()]
+
+    def _split_long(self, offset: int, piece: str):
+        """A sentence longer than CHUNK_WORDS becomes overlapping windows at word boundaries."""
+        words = list(self.splitter(piece))
+        if len(words) <= CHUNK_WORDS:
+            return [(offset, piece)]
+        out, step = [], CHUNK_WORDS - CHUNK_OVERLAP
+        for i in range(0, len(words), step):
+            w = words[i:i + CHUNK_WORDS]
+            out.append((offset + w[0][1], piece[w[0][1]:w[-1][2]]))
+            if i + CHUNK_WORDS >= len(words):
+                break
+        return out
 
     def detect(self, text: str) -> list[dict]:
         """Non-overlapping spans: {start, end, type, rule_id, score}."""
