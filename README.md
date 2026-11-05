@@ -1,6 +1,6 @@
 # iBalance Backend
 
-FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그와 XLSX 보호본 생성을 제공합니다.
+FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그와 XLSX 보호본 생성·다운로드를 제공합니다.
 
 ## 엔드포인트
 
@@ -9,6 +9,7 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | GET    | `/`       | 서비스 정보 + 상태            |
 | GET    | `/health` | `{"status": "ok"}` 헬스체크   |
 | POST   | `/files/sanitize` | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
+| GET    | `/files/{work_id}/download` | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
 
 파일 API의 요청·응답, 오류 코드, 내부 AI 전송 연결 방법은 [파일 API 문서](docs/file-api.md)를 참고하세요.
 기존 텍스트·로그 API를 포함한 전체 명세는 서버의 `/docs`에서 확인할 수 있습니다.
