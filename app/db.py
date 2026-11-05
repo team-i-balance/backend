@@ -7,6 +7,8 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from app.log_time import sql_utc_microseconds
+
 # backend/ root (parent of this app/ package)
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -85,6 +87,7 @@ def get_conn():
     """Yield a sqlite3 connection with Row factory, committing on success."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.create_function("utc_microseconds", 1, sql_utc_microseconds, deterministic=True)
     conn.execute("PRAGMA foreign_keys = ON;")
     try:
         yield conn

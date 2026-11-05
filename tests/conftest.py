@@ -26,6 +26,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("LOG_KEYS_DIR", str(tmp_path / "keys"))
     monkeypatch.setenv("LOG_EXPORT_DIR", str(tmp_path / "exports"))
     monkeypatch.setenv("POLICY_KEYS_DIR", str(tmp_path / "policy_keys"))
+    monkeypatch.setenv("POLICY_DB_PATH", str(tmp_path / "policy.db"))
 
     # Drop any already-imported app/main modules so they re-read env vars.
     for name in list(sys.modules):

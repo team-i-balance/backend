@@ -8,6 +8,8 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | ------ | --------- | ----------------------------- |
 | GET    | `/`       | 서비스 정보 + 상태            |
 | GET    | `/health` | `{"status": "ok"}` 헬스체크   |
+| GET    | `/logs/stats` | 기간별 통계 및 행동·등급·큐별 건수 |
+| GET    | `/logs/events` | 기간·등급·큐 필터와 커서 페이지 넘김 |
 | POST   | `/events/{event_id}/reason` | 민감 원문 전송 후 직원 사유 제출·저장 |
 | POST   | `/files/sanitize` | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
 | GET    | `/files/{work_id}/download` | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
@@ -21,6 +23,7 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 검토 대상 기준, 요청·응답과 콘솔 연결 방법은 [보안팀 검토 API 문서](docs/case-api.md)를 참고하세요.
 검토 상태는 기존 `LOG_DB_PATH`에 영구 저장합니다. 인증 연결 전 처리자는 `unauthenticated`로 기록합니다.
 기존 텍스트·로그 API를 포함한 전체 명세는 서버의 `/docs`에서 확인할 수 있습니다.
+최근 7일 집계와 1,000건 이상의 목록 조회는 [로그 통계·페이지 넘김 문서](docs/log-stats-api.md)를 참고하세요.
 원문 전송 후 사유 제출 흐름, 추가 응답 필드와 재시도 규칙은 [직원 사유 API 문서](docs/event-reason-api.md)를 참고하세요.
 
 ## 로컬 실행
@@ -135,6 +138,9 @@ LibreOffice Calc의 기본 계산 설정과 빈 머리글·바닥글 및 빈 사
 
 ## 환경 변수
 
+- `POLICY_DB_PATH`: 정책 번들·적용 상태·PC 기록·모델을 저장할 SQLite 경로. 기본값 `data/policy.db`.
+- `POLICY_KEYS_DIR`: 정책 서명 개인키와 신뢰 공개키 디렉터리. 기본값 `keys/`.
+  운영에서는 DB와 기존 키를 모두 영구 경로에 보관하세요. [저장·이전 안내](docs/policy-persistence.md).
 - `ALLOWED_ORIGINS`: CORS 허용 오리진(콤마 구분). 기본값 `*`.
   배포 시 프론트엔드 주소로 지정하세요. 예: `https://your-app.vercel.app`
 

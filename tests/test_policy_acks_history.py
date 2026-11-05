@@ -160,9 +160,12 @@ def test_history_route_not_shadowed_by_version(client):
 
 
 def test_history_missing_stored_at_is_null(client):
-    from app.policy import StoredBundle, store
-    store._history[1] = StoredBundle(version=1, envelope={}, sha256="sha256:x", stored_at=None)
-    store._latest_version = 1
+    import os
+    import sqlite3
+
+    with sqlite3.connect(os.environ["POLICY_DB_PATH"]) as conn:
+        conn.execute("""INSERT INTO policy_bundle (version, envelope, sha256, stored_at)
+                        VALUES (1, '{}', 'sha256:x', NULL)""")
     assert client.get("/policy/history").json() == [
         {"version": 1, "sha256": "sha256:x", "stored_at": None, "rule_count": 0}
     ]
