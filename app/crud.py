@@ -5,7 +5,7 @@ from typing import Optional
 
 from app.classify import classify
 from app.db import get_conn
-from app.schemas import EventIn, Stats
+from app.schemas import Action, EventIn, Grade, Stats
 
 # Actions that count as "accepted" (sent to the AI in some form).
 _ACCEPTED_ACTIONS = ("send_as_is", "send_transformed")
@@ -73,6 +73,16 @@ def insert_event(event: EventIn) -> dict:
             ),
         )
         new_id = cur.lastrowid
+        needs_reason = (
+            event.grade == Grade.sensitive
+            and event.action == Action.send_as_is
+            and event.reason is None
+        )
+        conn.execute(
+            "UPDATE event_log SET reason_requested_at = ?, reason_at = ? WHERE id = ?",
+            (created_at if needs_reason else None,
+             created_at if event.reason is not None else None, new_id),
+        )
         row = conn.execute(
             "SELECT * FROM event_log WHERE id = ?", (new_id,)
         ).fetchone()

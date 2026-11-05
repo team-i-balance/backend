@@ -93,10 +93,30 @@ def _migrate_is_test(conn) -> None:
 
 
 def init_db() -> None:
-    """Create the data dir, DB file, and tables if missing; run migrations."""
+    """Create tables; add reason tracking and the is_test flag to existing event databases."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        # Serialize schema inspection + ALTER across concurrent server starts.
+        # reason_text is also used by event-context metadata (issue #21).
+        conn.execute("BEGIN IMMEDIATE")
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(event_log)")}
+        for name in ("reason_requested_at", "reason_at", "reason_text"):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE event_log ADD COLUMN {name} TEXT")
+        # Older rows have no independent request/submission timestamps. Use
+        # event creation time for their initial waiting state / initial reason.
+        conn.execute("""
+            UPDATE event_log SET reason_requested_at = created_at
+            WHERE grade = 'sensitive_S' AND action = 'send_as_is'
+              AND reason IS NULL AND reason_requested_at IS NULL
+        """)
+        conn.execute("""
+            UPDATE event_log SET reason_at = created_at
+            WHERE reason IS NOT NULL AND reason_at IS NULL
+        """)
+        # Finish the reason migration's transaction before the is_test migration opens its own.
+        conn.commit()
         _migrate_is_test(conn)
 
 
