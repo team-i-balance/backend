@@ -17,12 +17,13 @@ Implements the "변환 정책 번들·서명 명세" (see message.txt):
       6 expired            expires_at has passed
       7 model_mismatch     model.sha256 != installed model hash
 
-Scope of this slice: envelope parsing, signature verification, the 7 checks,
-and storing the active policy. Applying rules to the SLM (set_policy), the
-/publish + /ack endpoints, and the model manifest are later steps.
+The backend's published/active policies, acknowledgements, and model manifest
+are persisted in SQLite. Standalone PolicyStore() instances use isolated
+in-memory SQLite unless a db_path is provided.
 
 Configuration (env):
   POLICY_KEYS_DIR         where trusted public keys + the temp signing key live
+  POLICY_DB_PATH          SQLite path (default backend/data/policy.db)
   POLICY_ORG              this device/org id (default "acme")
   POLICY_EXPECTED_MODEL_SHA256  installed model hash; if unset, model check is
                           skipped (hackathon convenience)
@@ -30,11 +31,13 @@ Configuration (env):
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import json
 import os
+import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -46,17 +49,25 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
+from app.policy_db import PolicyDatabase
+
 POLICY_PAYLOAD_TYPE = "application/vnd.piiguard.policy+json"
 MODEL_PAYLOAD_TYPE = "application/vnd.piiguard.model+json"
 SUPPORTED_SCHEMA = 1
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 KEYS_DIR = Path(os.getenv("POLICY_KEYS_DIR", BASE_DIR / "keys"))
+POLICY_DB_PATH = Path(os.getenv("POLICY_DB_PATH", BASE_DIR / "data" / "policy.db"))
 # Trusted public keys are trust/<keyid>.pub under the keys dir (MDM-installed).
 TRUST_DIR = KEYS_DIR / "trust"
 # Temporary signing key for local/demo publishing (console/KMS holds it in prod).
 DEMO_KEY_ID = "console-demo"
 PRIV_KEY_PATH = KEYS_DIR / f"{DEMO_KEY_ID}.key"
+_KEY_LOCK = threading.Lock()
+
+
+class SigningKeyError(RuntimeError):
+    """Existing signing identity is missing or inconsistent; never rotate silently."""
 
 
 class PolicyError(ValueError):
@@ -75,25 +86,60 @@ def pae(payload_type: str, payload: bytes) -> bytes:
 
 
 # --- Keys (demo signing + trusted verification keys) -------------------------
+def _atomic_key_write(path: Path, data: bytes) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=".key-", dir=path.parent)
+    try:
+        # mkstemp creates mode 0600. Flush bytes before atomically publishing.
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def ensure_demo_key() -> None:
-    """Create a demo Ed25519 signing key and publish its public half to trust/."""
+    """Reuse the signing identity; recover a missing public half, never replace it."""
     TRUST_DIR.mkdir(parents=True, exist_ok=True)
-    if PRIV_KEY_PATH.exists():
-        return
-    priv = Ed25519PrivateKey.generate()
-    PRIV_KEY_PATH.write_bytes(
-        priv.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-    )
-    (TRUST_DIR / f"{DEMO_KEY_ID}.pub").write_bytes(
-        priv.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-    )
+    public_path = TRUST_DIR / f"{DEMO_KEY_ID}.pub"
+    with _KEY_LOCK, (KEYS_DIR / ".signing.lock").open("a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            if PRIV_KEY_PATH.exists():
+                priv = serialization.load_pem_private_key(PRIV_KEY_PATH.read_bytes(), password=None)
+                if not isinstance(priv, Ed25519PrivateKey):
+                    raise SigningKeyError("signing key is not Ed25519")
+            else:
+                if public_path.exists():
+                    raise SigningKeyError("restore the missing signing key; a public key already exists")
+                priv = Ed25519PrivateKey.generate()
+                _atomic_key_write(PRIV_KEY_PATH, priv.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption(),
+                ))
+            public_bytes = priv.public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            if public_path.exists():
+                trusted = serialization.load_pem_public_key(public_path.read_bytes())
+                if not isinstance(trusted, Ed25519PublicKey) or trusted.public_bytes(
+                    serialization.Encoding.Raw, serialization.PublicFormat.Raw,
+                ) != priv.public_key().public_bytes(
+                    serialization.Encoding.Raw, serialization.PublicFormat.Raw,
+                ):
+                    raise SigningKeyError("signing key and trusted public key do not match")
+            else:
+                _atomic_key_write(public_path, public_bytes)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def load_trusted_key(keyid: str) -> Optional[Ed25519PublicKey]:
@@ -106,21 +152,28 @@ def load_trusted_key(keyid: str) -> Optional[Ed25519PublicKey]:
 
 
 def load_demo_private_key() -> Ed25519PrivateKey:
-    ensure_demo_key()
-    return serialization.load_pem_private_key(PRIV_KEY_PATH.read_bytes(), password=None)
+    try:
+        ensure_demo_key()
+        return serialization.load_pem_private_key(PRIV_KEY_PATH.read_bytes(), password=None)
+    except (OSError, ValueError, TypeError) as exc:
+        raise SigningKeyError("signing key files are unavailable or invalid") from exc
+
+
+def _sign_bundle(payload: dict, private_key, *, keyid: str, payload_type: str) -> dict:
+    payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    sig = private_key.sign(pae(payload_type, payload_bytes))
+    return {
+        "payloadType": payload_type,
+        "payload": base64.b64encode(payload_bytes).decode("ascii"),
+        "signatures": [{"keyid": keyid, "sig": base64.b64encode(sig).decode("ascii")}],
+    }
 
 
 def make_bundle(
     payload: dict, *, keyid: str = DEMO_KEY_ID, payload_type: str = POLICY_PAYLOAD_TYPE
 ) -> dict:
     """Build a signed DSSE bundle (demo/test helper; prod signs offline)."""
-    payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    sig = load_demo_private_key().sign(pae(payload_type, payload_bytes))
-    return {
-        "payloadType": payload_type,
-        "payload": base64.b64encode(payload_bytes).decode("ascii"),
-        "signatures": [{"keyid": keyid, "sig": base64.b64encode(sig).decode("ascii")}],
-    }
+    return _sign_bundle(payload, load_demo_private_key(), keyid=keyid, payload_type=payload_type)
 
 
 def make_model_bundle(manifest: dict, *, keyid: str = DEMO_KEY_ID) -> dict:
@@ -359,16 +412,55 @@ class PolicyStore:
     store here for the hackathon; in production they are separate services.
     """
 
-    def __init__(self, verifier: Optional[DsseVerifier] = None):
+    def __init__(self, verifier: Optional[DsseVerifier] = None, *, db_path: Path | str | None = None):
         self._verifier = verifier or DsseVerifier()
-        self._active: Optional[ActivePolicy] = None
-        self._history: dict[int, StoredBundle] = {}      # version -> bundle
-        self._latest_version: int = 0                    # for publish version+1
-        self._acks: dict[str, dict] = {}                 # device_id -> last ack (any version)
-        # version -> device_id -> that device's last ack for that version
-        self._acks_by_version: dict[int, dict[str, dict]] = {}
-        self._model_manifest: Optional[dict] = None      # latest model manifest
-        self._lock = threading.Lock()
+        self._db = PolicyDatabase(db_path)
+
+    def initialize(self) -> None:
+        self._db.initialize()
+
+    @staticmethod
+    def _current(conn) -> Optional[ActivePolicy]:
+        row = conn.execute("SELECT data FROM policy_active WHERE singleton = 1").fetchone()
+        return ActivePolicy(**json.loads(row["data"])) if row else None
+
+    @staticmethod
+    def _next_version(conn) -> int:
+        # Also respect a policy deployed from an external publisher, including
+        # a saved pre-migration bundle used to restore the version floor.
+        return conn.execute("""
+            SELECT MAX(version) + 1 FROM (
+                SELECT version FROM policy_bundle
+                UNION ALL SELECT version FROM policy_active
+                UNION ALL SELECT 0
+            )
+        """).fetchone()[0]
+
+    @staticmethod
+    def _stored(row) -> Optional[StoredBundle]:
+        if row is None:
+            return None
+        return StoredBundle(
+            version=row["version"], envelope=json.loads(row["envelope"]),
+            sha256=row["sha256"], stored_at=row["stored_at"], rule_count=row["rule_count"],
+        )
+
+    @staticmethod
+    def _sign(conn, payload: dict, payload_type: str) -> dict:
+        pinned = conn.execute("SELECT public_key FROM policy_signing_key WHERE singleton = 1").fetchone()
+        if pinned and not PRIV_KEY_PATH.is_file():
+            raise SigningKeyError("restore the original signing key for this policy database")
+        private_key = load_demo_private_key()
+        public_hex = private_key.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw,
+        ).hex()
+        if pinned and pinned["public_key"] != public_hex:
+            raise SigningKeyError("signing key differs from this policy database's public key")
+        conn.execute(
+            "INSERT OR IGNORE INTO policy_signing_key (singleton, public_key) VALUES (1, ?)",
+            (public_hex,),
+        )
+        return _sign_bundle(payload, private_key, keyid=DEMO_KEY_ID, payload_type=payload_type)
 
     # --- PC-side: verify + apply --------------------------------------------
     def deploy(self, bundle: dict) -> tuple[bool, str]:
@@ -378,17 +470,16 @@ class PolicyStore:
         (bad_type/bad_signature/unsupported_schema/wrong_org/rollback/expired/
         model_mismatch).
         """
-        with self._lock:
-            last_version = self._active.version if self._active else None
-        try:
-            verified = self._verifier.verify(bundle, last_version=last_version)
-        except PolicyError as exc:
-            return False, exc.code
-
-        with self._lock:
-            if self._active is not None and verified.version <= self._active.version:
+        with self._db.transaction(write=True) as conn:
+            active = self._current(conn)
+            last_version = active.version if active else None
+            try:
+                verified = self._verifier.verify(bundle, last_version=last_version)
+            except PolicyError as exc:
+                return False, exc.code
+            if last_version is not None and verified.version <= last_version:
                 return False, "rollback"
-            self._active = ActivePolicy(
+            active = ActivePolicy(
                 org=verified.org,
                 version=verified.version,
                 keyid=verified.keyid,
@@ -400,29 +491,34 @@ class PolicyStore:
                 activated_at=datetime.now(timezone.utc).isoformat(),
                 bundle_sha256=bundle_hash(bundle),
             )
+            conn.execute(
+                """INSERT INTO policy_active (singleton, version, data) VALUES (1, ?, ?)
+                   ON CONFLICT(singleton) DO UPDATE SET version=excluded.version, data=excluded.data""",
+                (active.version, json.dumps(asdict(active), ensure_ascii=False)),
+            )
             return True, f"applied version {verified.version}"
 
     def current(self) -> Optional[ActivePolicy]:
-        with self._lock:
-            return self._active
+        with self._db.transaction() as conn:
+            return self._current(conn)
 
     # --- Backend-side: publish + history + latest ---------------------------
     def next_version(self) -> int:
-        with self._lock:
-            return self._latest_version + 1
+        """Preview only; publish allocates the version inside its transaction."""
+        with self._db.transaction() as conn:
+            return self._next_version(conn)
 
     def publish(self, payload: dict, *, signer=None) -> StoredBundle:
         """Sign a payload into a DSSE bundle, bump version, and store it.
 
-        The payload's version is set to latest+1 by the store (the console does
-        not pick versions). ``signer`` builds the signed envelope from a payload
-        (defaults to the demo make_bundle).
+        The version is allocated above both published and applied versions;
+        the console cannot pick it. ``signer`` may override signing in tests.
+        The default signer is bound to the persistent store's public key.
         """
-        signer = signer or make_bundle
-        with self._lock:
-            version = self._latest_version + 1
+        with self._db.transaction(write=True) as conn:
+            version = self._next_version(conn)
             payload = {**payload, "version": version}
-            envelope = signer(payload)
+            envelope = signer(payload) if signer else self._sign(conn, payload, POLICY_PAYLOAD_TYPE)
             rules = payload.get("rules")
             stored = StoredBundle(
                 version=version,
@@ -431,42 +527,42 @@ class PolicyStore:
                 stored_at=datetime.now(timezone.utc).isoformat(),
                 rule_count=len(rules) if isinstance(rules, list) else 0,
             )
-            self._history[version] = stored
-            self._latest_version = version
+            conn.execute(
+                """INSERT INTO policy_bundle (version, envelope, sha256, stored_at, rule_count)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (stored.version, json.dumps(stored.envelope, ensure_ascii=False),
+                 stored.sha256, stored.stored_at, stored.rule_count),
+            )
             return stored
 
     def latest(self) -> Optional[StoredBundle]:
-        with self._lock:
-            if self._latest_version == 0:
-                return None
-            return self._history.get(self._latest_version)
+        with self._db.transaction() as conn:
+            row = conn.execute("SELECT * FROM policy_bundle ORDER BY version DESC LIMIT 1").fetchone()
+            return self._stored(row)
 
     def get_version(self, version: int) -> Optional[StoredBundle]:
-        with self._lock:
-            return self._history.get(version)
+        with self._db.transaction() as conn:
+            row = conn.execute("SELECT * FROM policy_bundle WHERE version = ?", (version,)).fetchone()
+            return self._stored(row)
 
     def history(self) -> list[StoredBundle]:
         """All stored bundles, newest version first."""
-        with self._lock:
-            return [self._history[v] for v in sorted(self._history, reverse=True)]
+        with self._db.transaction() as conn:
+            rows = conn.execute("SELECT * FROM policy_bundle ORDER BY version DESC")
+            return [self._stored(row) for row in rows]
 
     # --- Backend-side: ack tracking -----------------------------------------
     def record_ack(self, device_id: str, version: int, status: str, reason: Optional[str]) -> None:
-        entry = {
-            "device_id": device_id,
-            "version": version,
-            "status": status,
-            "reason": reason,
-            "at": datetime.now(timezone.utc).isoformat(),
-        }
-        with self._lock:
-            self._acks[device_id] = entry
-            # A device re-sending for the same version overwrites its earlier ack.
-            self._acks_by_version.setdefault(version, {})[device_id] = entry
+        with self._db.transaction(write=True) as conn:
+            conn.execute(
+                "INSERT INTO policy_ack (device_id, version, status, reason, at) VALUES (?, ?, ?, ?, ?)",
+                (device_id, version, status, reason, datetime.now(timezone.utc).isoformat()),
+            )
 
     def has_acks(self, version: int) -> bool:
-        with self._lock:
-            return bool(self._acks_by_version.get(version))
+        with self._db.transaction() as conn:
+            row = conn.execute("SELECT 1 FROM policy_ack WHERE version = ? LIMIT 1", (version,)).fetchone()
+            return row is not None
 
     def ack_summary(self, version: Optional[int] = None) -> dict:
         """Apply/reject counts.
@@ -474,11 +570,14 @@ class PolicyStore:
         version=None: each device's last ack, whatever version it was for
         (legacy console view). version=N: each device's last ack for N only.
         """
-        with self._lock:
-            if version is None:
-                acks = list(self._acks.values())
-            else:
-                acks = list(self._acks_by_version.get(version, {}).values())
+        with self._db.transaction() as conn:
+            where = "WHERE version = ?" if version is not None else ""
+            params = (version,) if version is not None else ()
+            acks = conn.execute(f"""
+                SELECT status, reason FROM policy_ack WHERE id IN (
+                    SELECT MAX(id) FROM policy_ack {where} GROUP BY device_id
+                )
+            """, params).fetchall()
             applied = sum(1 for a in acks if a["status"] == "applied")
             rejected = sum(1 for a in acks if a["status"] == "rejected")
             reasons: dict[str, int] = {}
@@ -493,23 +592,36 @@ class PolicyStore:
             }
 
     # --- model manifest ------------------------------------------------------
+    def publish_model(self, manifest: dict) -> None:
+        with self._db.transaction(write=True) as conn:
+            envelope = self._sign(conn, manifest, MODEL_PAYLOAD_TYPE)
+            self._set_model(conn, envelope)
+
+    @staticmethod
+    def _set_model(conn, manifest: dict) -> None:
+        conn.execute(
+            """INSERT INTO model_manifest (singleton, envelope) VALUES (1, ?)
+               ON CONFLICT(singleton) DO UPDATE SET envelope=excluded.envelope""",
+            (json.dumps(manifest, ensure_ascii=False),),
+        )
+
     def set_model_manifest(self, manifest: dict) -> None:
-        with self._lock:
-            self._model_manifest = manifest
+        with self._db.transaction(write=True) as conn:
+            self._set_model(conn, manifest)
 
     def model_manifest(self) -> Optional[dict]:
-        with self._lock:
-            return self._model_manifest
+        with self._db.transaction() as conn:
+            row = conn.execute("SELECT envelope FROM model_manifest WHERE singleton = 1").fetchone()
+            return json.loads(row["envelope"]) if row else None
 
     def reset(self) -> None:
-        with self._lock:
-            self._active = None
-            self._history.clear()
-            self._latest_version = 0
-            self._acks.clear()
-            self._acks_by_version.clear()
-            self._model_manifest = None
+        """Reset isolated test stores; persistent version history cannot be reset here."""
+        if self._db.path is not None:
+            raise RuntimeError("reset is only available for in-memory test stores")
+        with self._db.transaction(write=True) as conn:
+            for table in ("policy_active", "policy_bundle", "policy_ack", "model_manifest"):
+                conn.execute(f"DELETE FROM {table}")
 
 
 # Module-level store shared by the policy router.
-store = PolicyStore()
+store = PolicyStore(db_path=POLICY_DB_PATH)

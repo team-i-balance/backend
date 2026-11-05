@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from app.policy import (
     ActivePolicy,
     DEMO_KEY_ID,
-    make_model_bundle,
+    SigningKeyError,
     store,
 )
 from app.schemas import (
@@ -93,7 +93,12 @@ def current():
 # --- Backend / console side -------------------------------------------------
 @router.post("/publish", response_model=PublishOut)
 def publish(body: PublishIn):
-    stored = store.publish(body.payload)
+    try:
+        stored = store.publish(body.payload)
+    except SigningKeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="policy signing key unavailable; restore the original key files",
+        ) from exc
     return PublishOut(
         version=stored.version, keyid=DEMO_KEY_ID, bundle_sha256=stored.sha256
     )
@@ -153,8 +158,12 @@ def model_publish(body: ModelPublishIn):
         "sha256": body.sha256,
         "url": body.url,
     }
-    bundle = make_model_bundle(manifest)
-    store.set_model_manifest(bundle)
+    try:
+        store.publish_model(manifest)
+    except SigningKeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="policy signing key unavailable; restore the original key files",
+        ) from exc
     return {"published": True, "name": body.name, "version": body.version}
 
 
