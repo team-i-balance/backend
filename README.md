@@ -11,11 +11,13 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | GET    | `/` | 없음 | 서비스 정보 + 상태 |
 | GET    | `/health` | 없음 | `{"status": "ok"}` 헬스체크 |
 | POST   | `/auth/dev-token` | 없음 | 즉석 Bearer 토큰 발급(`{"scope": "api"\|"security"}`); `DISABLE_DEV_TOKEN=1`이면 403 |
-| POST   | `/logs/events` | api | 런타임 이벤트 1건 저장·큐 분류(`"test": true`면 시험 이벤트) |
+| POST   | `/logs/events` | api | 런타임 이벤트 1건 저장·큐 분류(`"test": true`면 시험 이벤트, 선택 `policy_version`) |
 | GET    | `/logs/events` | security | 기간·등급·큐 필터와 커서 페이지 넘김 |
 | GET    | `/logs/stats` | security | 기간별 통계 및 행동·등급·큐별 건수 |
 | POST   | `/logs/export` | security | 보안팀 공개키로 암호화한 로그 파일 생성. 큐·기간(`start`/`end`) 필터, `limit`(기본 1,000·최대 10,000), `cursor`/`next_cursor` 페이지 넘김 |
 | POST   | `/events/{event_id}/reason` | api | 민감 원문 전송 후 직원 사유 제출·저장 |
+| GET    | `/events/{event_id}/reason` | api | 사유 필요 여부·재요청 시각(`reason_requested_at`) 조회, `no-store` ([문서](docs/event-reason-api.md)) |
+| POST   | `/events/{event_id}/reason-request` | security | 보안팀이 직원에게 사유 재요청 |
 | POST   | `/files/sanitize` | api | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
 | GET    | `/files/{work_id}/download` | api | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
 | POST   | `/files/{work_id}/restore` | api | 파일 매핑으로 AI 답변 복원; 만료 전까지 여러 번 |
@@ -24,6 +26,8 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | POST   | `/cases/{id}/close` | security | 위반·예외 인정·오탐으로 종결 |
 | POST   | `/cases/{id}/reopen` | security | 이전 이력을 유지하고 다시 열기 |
 | POST   | `/cases/close-bulk` | security | 선택 검토 건을 일괄 ‘문제 없음’으로 종결 |
+| GET    | `/false-positives` | security | 오탐 신고를 값 해시별로 묶은 목록, `limit`/`cursor`(`last_event_id`) 페이지 넘김 ([문서](docs/false-positive-api.md)) |
+| POST   | `/false-positives/{value_hash}/decide` | security | 오탐 신고 묶음 판단 |
 | GET    | `/policy/latest` | api | 최신 서명 번들. `ETag: "sha256:…"`, `If-None-Match`가 맞으면 304 |
 | GET    | `/policy/history` | security | 발행된 번들 목록(최신순): 버전·`sha256`·저장 시각·규칙 수 |
 | GET    | `/policy/acks` | security | PC 적용/거부 집계(`?version=N`으로 한 버전만) |
