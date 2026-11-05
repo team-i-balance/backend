@@ -30,6 +30,7 @@ Configuration (env):
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import threading
@@ -46,6 +47,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 POLICY_PAYLOAD_TYPE = "application/vnd.piiguard.policy+json"
+MODEL_PAYLOAD_TYPE = "application/vnd.piiguard.model+json"
 SUPPORTED_SCHEMA = 1
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -108,15 +110,71 @@ def load_demo_private_key() -> Ed25519PrivateKey:
     return serialization.load_pem_private_key(PRIV_KEY_PATH.read_bytes(), password=None)
 
 
-def make_bundle(payload: dict, *, keyid: str = DEMO_KEY_ID) -> dict:
+def make_bundle(
+    payload: dict, *, keyid: str = DEMO_KEY_ID, payload_type: str = POLICY_PAYLOAD_TYPE
+) -> dict:
     """Build a signed DSSE bundle (demo/test helper; prod signs offline)."""
     payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    sig = load_demo_private_key().sign(pae(POLICY_PAYLOAD_TYPE, payload_bytes))
+    sig = load_demo_private_key().sign(pae(payload_type, payload_bytes))
     return {
-        "payloadType": POLICY_PAYLOAD_TYPE,
+        "payloadType": payload_type,
         "payload": base64.b64encode(payload_bytes).decode("ascii"),
         "signatures": [{"keyid": keyid, "sig": base64.b64encode(sig).decode("ascii")}],
     }
+
+
+def make_model_bundle(manifest: dict, *, keyid: str = DEMO_KEY_ID) -> dict:
+    """Signed DSSE bundle for a model manifest (payloadType model+json)."""
+    return make_bundle(manifest, keyid=keyid, payload_type=MODEL_PAYLOAD_TYPE)
+
+
+def verify_model_envelope(bundle: dict, *, key_loader=None) -> dict:
+    """Verify a model-manifest DSSE bundle's signature and return the manifest.
+
+    Raises PolicyError(bad_type/bad_signature) on failure. Only the signature
+    and payloadType are checked here (manifest content is validated by caller).
+    """
+    loader = key_loader or load_trusted_key
+    if not isinstance(bundle, dict) or bundle.get("payloadType") != MODEL_PAYLOAD_TYPE:
+        raise PolicyError("bad_type", "unexpected payloadType")
+    payload_b64 = bundle.get("payload")
+    signatures = bundle.get("signatures")
+    if not isinstance(payload_b64, str) or not isinstance(signatures, list):
+        raise PolicyError("bad_type", "malformed envelope")
+    try:
+        payload_bytes = base64.b64decode(payload_b64, validate=True)
+    except Exception as exc:
+        raise PolicyError("bad_type", "payload is not valid base64") from exc
+    message = pae(MODEL_PAYLOAD_TYPE, payload_bytes)
+    ok = False
+    for entry in signatures:
+        if not isinstance(entry, dict):
+            continue
+        keyid, sig_b64 = entry.get("keyid"), entry.get("sig")
+        if not isinstance(keyid, str) or not isinstance(sig_b64, str):
+            continue
+        key = loader(keyid)
+        if key is None:
+            continue
+        try:
+            sig = base64.b64decode(sig_b64, validate=True)
+        except Exception:
+            continue
+        try:
+            key.verify(sig, message)
+            ok = True
+            break
+        except InvalidSignature:
+            continue
+    if not ok:
+        raise PolicyError("bad_signature", "no trusted signature matched")
+    try:
+        manifest = json.loads(payload_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise PolicyError("bad_type", "manifest is not valid JSON") from exc
+    if not isinstance(manifest, dict):
+        raise PolicyError("bad_type", "manifest must be an object")
+    return manifest
 
 
 # --- Verified result ---------------------------------------------------------
@@ -129,6 +187,8 @@ class VerifiedBundle:
     rules: list
     expires_at: Optional[str]
     payload: dict
+    types: dict
+    thresholds: dict
 
 
 def _parse_expiry(value) -> Optional[datetime]:
@@ -223,6 +283,8 @@ class DsseVerifier:
             raise PolicyError("unsupported_schema", "rules must be a list")
 
         keyid = signatures[0].get("keyid") if signatures else None
+        types = payload.get("types") or {}
+        thresholds = payload.get("thresholds") or {}
         return VerifiedBundle(
             org=payload["org"],
             version=version,
@@ -231,6 +293,8 @@ class DsseVerifier:
             rules=rules,
             expires_at=payload.get("expires_at"),
             payload=payload,
+            types=types if isinstance(types, dict) else {},
+            thresholds=thresholds if isinstance(thresholds, dict) else {},
         )
 
     def _any_signature_valid(self, signatures: list, message: bytes) -> bool:
@@ -264,22 +328,50 @@ class ActivePolicy:
     keyid: Optional[str]
     rule_count: int
     rules: list
+    types: dict
+    thresholds: dict
     expires_at: Optional[str]
     activated_at: str
+    bundle_sha256: str
+
+
+def bundle_hash(bundle: dict) -> str:
+    """sha256 over the canonical bytes of the whole DSSE envelope."""
+    raw = json.dumps(bundle, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+@dataclass
+class StoredBundle:
+    version: int
+    envelope: dict
+    sha256: str
+    stored_at: str
 
 
 class PolicyStore:
+    """Active policy + version history + ack tracking.
+
+    Backend role (publish/latest/ack) and the PC-side verify (deploy) share one
+    store here for the hackathon; in production they are separate services.
+    """
+
     def __init__(self, verifier: Optional[DsseVerifier] = None):
         self._verifier = verifier or DsseVerifier()
         self._active: Optional[ActivePolicy] = None
+        self._history: dict[int, StoredBundle] = {}      # version -> bundle
+        self._latest_version: int = 0                    # for publish version+1
+        self._acks: dict[str, dict] = {}                 # device_id -> last ack
+        self._model_manifest: Optional[dict] = None      # latest model manifest
         self._lock = threading.Lock()
 
+    # --- PC-side: verify + apply --------------------------------------------
     def deploy(self, bundle: dict) -> tuple[bool, str]:
         """Verify and (if valid + newer) activate. Returns (accepted, reason).
 
-        On any failure the current policy is kept and the reason is the spec
-        failure code (bad_type / bad_signature / unsupported_schema /
-        wrong_org / rollback / expired / model_mismatch).
+        On failure the current policy is kept and the reason is the spec code
+        (bad_type/bad_signature/unsupported_schema/wrong_org/rollback/expired/
+        model_mismatch).
         """
         with self._lock:
             last_version = self._active.version if self._active else None
@@ -289,7 +381,6 @@ class PolicyStore:
             return False, exc.code
 
         with self._lock:
-            # Re-check version under lock in case of a concurrent deploy.
             if self._active is not None and verified.version <= self._active.version:
                 return False, "rollback"
             self._active = ActivePolicy(
@@ -298,8 +389,11 @@ class PolicyStore:
                 keyid=verified.keyid,
                 rule_count=verified.rule_count,
                 rules=verified.rules,
+                types=verified.types,
+                thresholds=verified.thresholds,
                 expires_at=verified.expires_at,
                 activated_at=datetime.now(timezone.utc).isoformat(),
+                bundle_sha256=bundle_hash(bundle),
             )
             return True, f"applied version {verified.version}"
 
@@ -307,9 +401,85 @@ class PolicyStore:
         with self._lock:
             return self._active
 
+    # --- Backend-side: publish + history + latest ---------------------------
+    def next_version(self) -> int:
+        with self._lock:
+            return self._latest_version + 1
+
+    def publish(self, payload: dict, *, signer=None) -> StoredBundle:
+        """Sign a payload into a DSSE bundle, bump version, and store it.
+
+        The payload's version is set to latest+1 by the store (the console does
+        not pick versions). ``signer`` builds the signed envelope from a payload
+        (defaults to the demo make_bundle).
+        """
+        signer = signer or make_bundle
+        with self._lock:
+            version = self._latest_version + 1
+            payload = {**payload, "version": version}
+            envelope = signer(payload)
+            stored = StoredBundle(
+                version=version,
+                envelope=envelope,
+                sha256=bundle_hash(envelope),
+                stored_at=datetime.now(timezone.utc).isoformat(),
+            )
+            self._history[version] = stored
+            self._latest_version = version
+            return stored
+
+    def latest(self) -> Optional[StoredBundle]:
+        with self._lock:
+            if self._latest_version == 0:
+                return None
+            return self._history.get(self._latest_version)
+
+    def get_version(self, version: int) -> Optional[StoredBundle]:
+        with self._lock:
+            return self._history.get(version)
+
+    # --- Backend-side: ack tracking -----------------------------------------
+    def record_ack(self, device_id: str, version: int, status: str, reason: Optional[str]) -> None:
+        with self._lock:
+            self._acks[device_id] = {
+                "device_id": device_id,
+                "version": version,
+                "status": status,
+                "reason": reason,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+
+    def ack_summary(self) -> dict:
+        with self._lock:
+            applied = sum(1 for a in self._acks.values() if a["status"] == "applied")
+            rejected = sum(1 for a in self._acks.values() if a["status"] == "rejected")
+            reasons: dict[str, int] = {}
+            for a in self._acks.values():
+                if a["status"] == "rejected" and a["reason"]:
+                    reasons[a["reason"]] = reasons.get(a["reason"], 0) + 1
+            return {
+                "devices": len(self._acks),
+                "applied": applied,
+                "rejected": rejected,
+                "reject_reasons": reasons,
+            }
+
+    # --- model manifest ------------------------------------------------------
+    def set_model_manifest(self, manifest: dict) -> None:
+        with self._lock:
+            self._model_manifest = manifest
+
+    def model_manifest(self) -> Optional[dict]:
+        with self._lock:
+            return self._model_manifest
+
     def reset(self) -> None:
         with self._lock:
             self._active = None
+            self._history.clear()
+            self._latest_version = 0
+            self._acks.clear()
+            self._model_manifest = None
 
 
 # Module-level store shared by the policy router.

@@ -144,11 +144,31 @@ local_ai의 `coverage`를 로그의 `detection_confidence`로 바꾼다.
 
 ### 엔드포인트
 
+PC 측:
+
 | Method | Path | 설명 |
 | --- | --- | --- |
 | POST | `/policy/deploy` | 번들 검증 → 통과+최신이면 적용, 아니면 거부(사유 코드) |
 | GET | `/policy/current` | 현재 활성 정책 메타(org·version·keyid·규칙 수·만료·적용 시각) |
 
-> 이번 범위: DSSE 봉투 파싱 + PAE Ed25519 검증 + 7단계 검증 + 활성 정책 저장.
-> 다음 단계: 활성 규칙을 SLM `set_policy`로 **실제 변환에 적용**, `/policy/publish`
-> ·`/policy/ack`·`/policy/latest`(ETag) 와 모델 매니페스트.
+백엔드(콘솔) 측:
+
+| Method | Path | 설명 |
+| --- | --- | --- |
+| POST | `/policy/publish` | payload를 받아 version+1 → 서명 → 저장. 응답 `{version, keyid, bundle_sha256}` |
+| GET | `/policy/latest` | 최신 번들 봉투. `ETag`=bundle sha256, 같으면 304 |
+| GET | `/policy/{version}` | 특정 버전 봉투(감사·재현) |
+| POST | `/policy/ack` | PC 적용 결과 보고 `{device_id, version, status, reason?}` |
+| GET | `/policy/acks` | 적용/거부 집계(기기수·applied·rejected·사유별) |
+| POST | `/policy/model/publish` | 모델 매니페스트 `{name, version, sha256, url}` 서명·저장 |
+| GET | `/policy/model/latest` | 최신 모델 매니페스트 봉투(payloadType `...model+json`) |
+
+### 실제 변환 적용 (S7 → S2 되먹임)
+
+활성 정책의 `types`(항목별 on/off)를 탐지기에 반영한다. `/process` 요청마다
+활성 정책을 탐지기에 적용해, off로 꺼진 유형은 탐지·가명화하지 않는다.
+한국어 카테고리 → 탐지기 유형 매핑은 `app/policy_apply.py`에 있고, 매핑에 없는
+카테고리는 무시한다(명세: `types`는 PC 지원 전까지 무시 가능).
+
+> 규칙(`rules`) 기반 신규 탐지(SLM 커스텀 규칙)는 SLM 모델 영역이라 범위 밖.
+> 여기서는 정규식 탐지 유형 on/off까지 적용한다.

@@ -68,8 +68,12 @@ def _get_detector(rules_only: bool):
 @router.post("", response_model=ProcessOut)
 def process_text(body: ProcessIn):
     from local_ai.pipeline import LocalSession
+    from app.policy import store as policy_store
+    from app.policy_apply import apply_policy_to_detector
 
     detector = _get_detector(body.rules_only)
+    # Apply the active policy's type toggles to the (shared) detector.
+    apply_policy_to_detector(detector, policy_store.current())
     # The pseudonym mapping is per-work; the detector is shared.
     session = LocalSession(detector)
     try:

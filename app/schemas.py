@@ -196,3 +196,45 @@ class DeployOut(BaseModel):
     accepted: bool
     reason: str          # why it was accepted or rejected
     policy: PolicyInfo   # the active policy AFTER this attempt
+
+
+class PublishIn(BaseModel):
+    """Console publishes a policy payload; the backend assigns version+1,
+    signs it into a DSSE bundle, and stores it. version (if provided) is
+    ignored — the store sets it."""
+
+    payload: dict
+
+
+class PublishOut(BaseModel):
+    version: int
+    keyid: str
+    bundle_sha256: str
+
+
+class AckStatus(str, Enum):
+    applied = "applied"
+    rejected = "rejected"
+
+
+class AckIn(BaseModel):
+    """A PC agent reports the outcome of applying a bundle version."""
+
+    device_id: str = Field(min_length=1, max_length=128)
+    version: int
+    status: AckStatus
+    reason: Optional[str] = Field(default=None, max_length=64)
+
+
+class AckOut(BaseModel):
+    ok: bool
+    summary: dict  # devices / applied / rejected / reject_reasons
+
+
+class ModelPublishIn(BaseModel):
+    """Console publishes a model manifest {name, version, sha256, url}."""
+
+    name: str
+    version: str
+    sha256: str
+    url: str

@@ -195,6 +195,107 @@ def test_pae_format():
     assert out == b"DSSEv1 1 t 2 ab"
 
 
+# --- model manifest verification + store.next_version -----------------------
+def test_verify_model_envelope_ok_and_failures():
+    import base64 as b64
+    import json as _json
+
+    from app.policy import (
+        MODEL_PAYLOAD_TYPE,
+        PolicyError,
+        PolicyStore,
+        pae,
+        verify_model_envelope,
+    )
+
+    priv = Ed25519PrivateKey.generate()
+    loader = lambda keyid: priv.public_key() if keyid == "k" else None
+
+    manifest = {"name": "m", "version": "1", "sha256": "h", "url": "u"}
+    raw = _json.dumps(manifest).encode()
+    sig = priv.sign(pae(MODEL_PAYLOAD_TYPE, raw))
+    good = {
+        "payloadType": MODEL_PAYLOAD_TYPE,
+        "payload": b64.b64encode(raw).decode(),
+        "signatures": [{"keyid": "k", "sig": b64.b64encode(sig).decode()}],
+    }
+    assert verify_model_envelope(good, key_loader=loader)["name"] == "m"
+
+    # wrong payloadType
+    with pytest.raises(PolicyError) as e:
+        verify_model_envelope({"payloadType": "x"}, key_loader=loader)
+    assert e.value.code == "bad_type"
+
+    # malformed envelope
+    with pytest.raises(PolicyError):
+        verify_model_envelope(
+            {"payloadType": MODEL_PAYLOAD_TYPE, "payload": 1, "signatures": 2},
+            key_loader=loader,
+        )
+
+    # bad base64 payload
+    with pytest.raises(PolicyError):
+        verify_model_envelope(
+            {"payloadType": MODEL_PAYLOAD_TYPE, "payload": "!!!", "signatures": []},
+            key_loader=loader,
+        )
+
+    # untrusted / weird signatures -> bad_signature
+    weird = dict(good)
+    weird["signatures"] = [
+        "nope",
+        {"keyid": 1, "sig": "x"},
+        {"keyid": "k", "sig": "!!notb64!!"},
+        {"keyid": "other", "sig": b64.b64encode(b"x").decode()},
+    ]
+    with pytest.raises(PolicyError) as e2:
+        verify_model_envelope(weird, key_loader=loader)
+    assert e2.value.code == "bad_signature"
+
+    # trusted keyid but signature made by a DIFFERENT key -> InvalidSignature
+    other_priv = Ed25519PrivateKey.generate()
+    wrong_sig = other_priv.sign(pae(MODEL_PAYLOAD_TYPE, raw))
+    wrongly_signed = {
+        "payloadType": MODEL_PAYLOAD_TYPE,
+        "payload": b64.b64encode(raw).decode(),
+        "signatures": [{"keyid": "k", "sig": b64.b64encode(wrong_sig).decode()}],
+    }
+    with pytest.raises(PolicyError) as e3:
+        verify_model_envelope(wrongly_signed, key_loader=loader)
+    assert e3.value.code == "bad_signature"
+
+    # signature valid but payload not JSON object
+    raw_bad = b"[1,2,3]"
+    sig_bad = priv.sign(pae(MODEL_PAYLOAD_TYPE, raw_bad))
+    not_obj = {
+        "payloadType": MODEL_PAYLOAD_TYPE,
+        "payload": b64.b64encode(raw_bad).decode(),
+        "signatures": [{"keyid": "k", "sig": b64.b64encode(sig_bad).decode()}],
+    }
+    with pytest.raises(PolicyError):
+        verify_model_envelope(not_obj, key_loader=loader)
+
+    # not valid JSON at all
+    raw_nj = b"\xff not json"
+    sig_nj = priv.sign(pae(MODEL_PAYLOAD_TYPE, raw_nj))
+    nj = {
+        "payloadType": MODEL_PAYLOAD_TYPE,
+        "payload": b64.b64encode(raw_nj).decode(),
+        "signatures": [{"keyid": "k", "sig": b64.b64encode(sig_nj).decode()}],
+    }
+    with pytest.raises(PolicyError):
+        verify_model_envelope(nj, key_loader=loader)
+
+
+def test_store_next_version():
+    from app.policy import PolicyStore
+
+    store = PolicyStore()
+    assert store.next_version() == 1
+    store.publish({"schema": 1, "org": "acme", "rules": []})
+    assert store.next_version() == 2
+
+
 # --- defensive / malformed-input branches -----------------------------------
 def _sign_raw(priv, raw: bytes):
     """Build an envelope that correctly signs arbitrary raw bytes."""
@@ -315,7 +416,7 @@ def test_store_inner_rollback_guard(signed):
         def verify(self, bundle, *, last_version):
             return VerifiedBundle(
                 org="acme", version=1, keyid="k", rule_count=0,
-                rules=[], expires_at=None, payload={},
+                rules=[], expires_at=None, payload={}, types={}, thresholds={},
             )
 
     store = PolicyStore(verifier=FixedVerifier())

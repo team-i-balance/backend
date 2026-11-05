@@ -110,6 +110,9 @@ class Detector:
         if not isinstance(threads, int) or isinstance(threads, bool) or threads < 1:
             raise ValueError('threads must be a positive integer')
         self.model_enabled = model_dir is not None or slm_dir is not None
+        # Detection types turned off by the active policy (types on/off). Empty
+        # by default, so behaviour is unchanged until a policy disables a type.
+        self._disabled_types: frozenset[str] = frozenset()
         self._tokenizer = self._session = self._np = None
         self._labels: dict[str, str] = {}
         self._slm = None
@@ -153,6 +156,17 @@ class Detector:
         except Exception as exc:
             raise DetectionError('Failed to load the local detection model') from exc
 
+    def set_policy(self, *, disabled_types=None) -> None:
+        """Apply active-policy toggles. Currently supports turning detection
+        types off (policy ``types`` on/off). Unknown types are ignored. Passing
+        None/empty restores default behaviour."""
+        self._disabled_types = frozenset(disabled_types or ())
+
+    def _apply_policy(self, spans: list[dict]) -> list[dict]:
+        if not self._disabled_types:
+            return spans
+        return [s for s in spans if s['type'] not in self._disabled_types]
+
     def detect(self, text: str) -> list[dict]:
         if not isinstance(text, str):
             raise TypeError('text must be a string')
@@ -162,7 +176,9 @@ class Detector:
             return found
         try:
             normalized_spans = self._detect_raw(normalized)
-            return _merge_overlaps(found + restore_detection_offsets(normalized_spans, offsets))
+            return self._apply_policy(
+                _merge_overlaps(found + restore_detection_offsets(normalized_spans, offsets))
+            )
         except Exception as exc:
             raise DetectionError('Normalized text detection failed; text was not fully checked') from exc
 
@@ -173,7 +189,7 @@ class Detector:
         structured = _structured_detections(text)
         found.extend(structured)
         if not self.model_enabled or not text:
-            return _merge_overlaps(found)
+            return self._apply_policy(_merge_overlaps(found))
         try:
             # Strong structured matches take precedence only when they fully
             # cover a model span. Partial overlaps still require review.
@@ -187,7 +203,7 @@ class Detector:
         except Exception as exc:
             # Return no partial result; avoid leaking input through exception text.
             raise DetectionError('Local model inference failed; text was not fully checked') from exc
-        return _merge_overlaps(found)
+        return self._apply_policy(_merge_overlaps(found))
 
     def _add_slm_spans(self, text: str, found: list[dict]) -> list[dict]:
         """Add SLM spans without cross-type overlaps (which pseudonymization rejects).
