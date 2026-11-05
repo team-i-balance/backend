@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from .additional_rules import detect_additional
+from .preprocessing import normalize_for_detection, restore_detection_offsets
 
 _PHONE = re.compile(r'(?<![0-9])01[016789][ -]?[0-9]{3,4}[ -]?[0-9]{4}(?![0-9])')
 _EMAIL = re.compile(r'(?i)(?<![\w.+-])[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![a-z0-9-])')
@@ -17,6 +19,7 @@ _EMAIL = re.compile(r'(?i)(?<![\w.+-])[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z
 _BUSINESS_HYPHEN = re.compile(r'(?<![0-9])([0-9]{3}-[0-9]{2}-[0-9]{5})(?![0-9])')
 _BUSINESS_PLAIN = re.compile(r'(?<![0-9])([0-9]{10})(?![0-9])')
 _BUSINESS_CONTEXT = re.compile(r'(?:사업자\s*(?:등록)?\s*번호|사업자\s*등록번호|business\s*(?:registration)?\s*(?:number|no))', re.I)
+_BUSINESS_FIELD = re.compile(_BUSINESS_CONTEXT.pattern + r'\s*[:=：]?\s*$', re.I)
 # Match the value only; delimiters and key names must not be replaced.
 _CREDENTIAL = re.compile(
     r"(?i)(?<![\w])(?:[\"']?(?P<field>api[_-]?key|access[_-]?token)[\"']?)\s*[:=]\s*"
@@ -40,20 +43,21 @@ def _valid_business_number(value: str) -> bool:
 def _structured_detections(text: str) -> list[dict]:
     found = []
     for match in _BUSINESS_HYPHEN.finditer(text):
-        if _valid_business_number(match.group(1)):
+        context = text[max(0, match.start() - 40):match.start()].rsplit('\n', 1)[-1]
+        if _valid_business_number(match.group(1)) or _BUSINESS_FIELD.search(context):
             found.append({'start': match.start(1), 'end': match.end(1), 'type': 'BUSINESS_NUMBER'})
     for match in _BUSINESS_PLAIN.finditer(text):
         # Only consider label preceding the value within the same short field.
         context = text[max(0, match.start() - 40):match.start()]
         last_line = context.rsplit('\n', 1)[-1]
-        if _BUSINESS_CONTEXT.search(last_line) and _valid_business_number(match.group(1)):
+        if _BUSINESS_FIELD.search(last_line):
             found.append({'start': match.start(1), 'end': match.end(1), 'type': 'BUSINESS_NUMBER'})
     for match in _CREDENTIAL.finditer(text):
         group = next((k for k in ('double', 'single', 'bare') if match.group(k) is not None), None)
         if group is None:
             continue
         value = match.group(group)
-        if not value.strip() or _PLACEHOLDER.fullmatch(value):
+        if not value.strip() or _PLACEHOLDER.fullmatch(value) or value.startswith(('$', '<', '{{')):
             continue
         kind = 'ACCESS_TOKEN' if 'token' in match.group('field').lower() else 'API_KEY'
         found.append({'start': match.start(group), 'end': match.end(group), 'type': kind})
@@ -64,6 +68,7 @@ def _structured_detections(text: str) -> list[dict]:
     for match in _PROVIDER_API_KEY.finditer(text):
         if not any(x['type'] in ('API_KEY', 'ACCESS_TOKEN') and x['start'] <= match.start() and x['end'] >= match.end() for x in found):
             found.append({'start': match.start(), 'end': match.end(), 'type': 'API_KEY'})
+    found.extend(detect_additional(text))
     return found
 
 
@@ -132,6 +137,17 @@ class Detector:
     def detect(self, text: str) -> list[dict]:
         if not isinstance(text, str):
             raise TypeError('text must be a string')
+        found = self._detect_raw(text)
+        normalized, offsets = normalize_for_detection(text)
+        if normalized == text:
+            return found
+        try:
+            normalized_spans = self._detect_raw(normalized)
+            return _merge_overlaps(found + restore_detection_offsets(normalized_spans, offsets))
+        except Exception as exc:
+            raise DetectionError('Normalized text detection failed; text was not fully checked') from exc
+
+    def _detect_raw(self, text: str) -> list[dict]:
         found = [{'start': m.start(), 'end': m.end(), 'type': kind}
                  for kind, pattern in (('PHONE', _PHONE), ('EMAIL', _EMAIL))
                  for m in pattern.finditer(text)]

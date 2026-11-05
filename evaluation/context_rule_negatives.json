@@ -1,0 +1,25 @@
+{
+  "review_status": "합성 음성 사례 초안; 사람 검토 전",
+  "scope": "ID_NUMBER, CARD, ACCOUNT, PASSWORD, BUSINESS_NUMBER, API_KEY, ACCESS_TOKEN 유형의 문서별 경고",
+  "cases": [
+    {"id":"prose_01","text":"오늘 회의는 오후 세 시에 시작합니다."},
+    {"id":"prose_02","text":"사업자번호를 안전하게 보관해야 합니다."},
+    {"id":"prose_03","text":"API 키와 비밀번호 설정 방법을 설명합니다."},
+    {"id":"prose_04","text":"카드번호 입력란에 값을 입력하세요."},
+    {"id":"prose_05","text":"계좌번호는 필수 항목입니다."},
+    {"id":"number_01","text":"회의 코드 1234567890"},
+    {"id":"number_02","text":"문서번호 123-45-67890"},
+    {"id":"number_03","text":"상품 코드 1111222233334444"},
+    {"id":"number_04","text":"주문 수량은 1234567890123개입니다."},
+    {"id":"number_05","text":"버전 2026-11-05를 사용합니다."},
+    {"id":"placeholder_01","text":"password=${PASSWORD}"},
+    {"id":"placeholder_02","text":"access_token=$TOKEN"},
+    {"id":"placeholder_03","text":"api_key=<your-api-key>"},
+    {"id":"placeholder_04","text":"password=[비밀번호_1]"},
+    {"id":"placeholder_05","text":"API_KEY=[API키_1]"},
+    {"id":"placeholder_08","text":"password={{PASSWORD}}"},
+    {"id":"placeholder_09","text":"계좌번호를 입력해 주세요."},
+    {"id":"placeholder_10","text":"주민등록번호 입력 안내입니다."}
+  ],
+  "ambiguous_excluded": ["password=changeme", "api_key=example"]
+}
