@@ -430,36 +430,43 @@ def _error_code(exc: Exception) -> str:
     return "compile_failed"
 
 
-# Last apply outcome in this process (#64): what requests use for the active policy.
-_runtime: dict = {"fingerprint": _UNSET, "effective_version": None, "error": None}
-_last_error: list = [None]   # {"version", "code", "at"} of the most recent failure
+# Last apply outcome per detector mode in this process (#64). The rules-only and the
+# full (AEGIS/SLM) detector apply the same active policy separately, and only the full
+# one runs the SLM rule check, so they can end up on different versions.
+MODES = ("full", "rules_only")
+_runtime: dict = {m: {"fingerprint": _UNSET, "effective_version": None} for m in MODES}
+_last_error: dict = {m: None for m in MODES}   # mode -> {"version", "code", "at"}
 
 
-def _record(policy, fingerprint, effective: ServerPolicy, code: Optional[str]) -> None:
-    # Several detectors (rules-only, full) share one active policy; a failure in any of
-    # them is what the operator needs to see, so a success does not hide it.
-    if _runtime["fingerprint"] != fingerprint or code is not None or _runtime["error"] is None:
-        _runtime.update(fingerprint=fingerprint, effective_version=effective.version, error=code)
+def _mode(detector) -> str:
+    return "full" if getattr(detector, "model_enabled", False) else "rules_only"
+
+
+def _record(mode: str, policy, fingerprint, effective_version, code: Optional[str]) -> None:
+    _runtime[mode] = {"fingerprint": fingerprint, "effective_version": effective_version}
     if code is not None:
-        _last_error[0] = {"version": getattr(policy, "version", None), "code": code,
-                          "at": datetime.now(timezone.utc).isoformat()}
+        _last_error[mode] = {"version": getattr(policy, "version", None), "code": code,
+                             "at": datetime.now(timezone.utc).isoformat()}
 
 
-def _slm_for_check(always: bool):
+def _slm_for_check(slm_check: str):
     """(slm, base rules) the full detector applies policies with, without loading a model.
 
     Uses the running SLM when it is loaded. Otherwise the same validation runs over the
     fixed labels and the LOCAL_SLM_POLICY (or bundled example) rules the SLM would load,
-    so a bundle is checked identically whether or not the model is up yet. With
-    ``always=False`` a server without an SLM configured skips the SLM check (what runs).
+    so a bundle is checked identically whether or not the model is up yet.
+    ``slm_check``: "always", "configured" (only when this server has an SLM: what the
+    full detector runs) or "never" (the rules-only detector).
     """
+    if slm_check == "never":
+        return None, None
     from app.detectors import SLM_DIR_ENV, SLM_POLICY_ENV, cached_detector
 
     detector = cached_detector(False)
     slm = getattr(detector, "_slm", None)
     if slm is not None and isinstance(getattr(slm, "rules", None), dict) and hasattr(slm, "rules_view"):
         return slm, [r for rid, r in slm.rules.items() if not rid.startswith("P-")]
-    if not always and not os.getenv(SLM_DIR_ENV):
+    if slm_check == "configured" and not os.getenv(SLM_DIR_ENV):
         return None, None
     from local_ai.slm import HERE, SlmSpanDetector, load_policy
 
@@ -473,15 +480,15 @@ def _slm_for_check(always: bool):
     return stub, base
 
 
-def check_policy(policy: Optional[ActivePolicy], *, with_slm: bool = True) -> Optional[str]:
+def check_policy(policy: Optional[ActivePolicy], *, slm_check: str = "always") -> Optional[str]:
     """Compile ``policy`` as the server detectors would; None if it applies, else an error code.
 
     Never raises and never changes a detector. Used before activating or signing (#64).
-    The SLM rule-label check runs even on a server without the SLM (``with_slm=True``): a
-    bundle with duplicate or fixed labels breaks every SLM that receives it.
+    By default the SLM rule-label check runs even on a server without the SLM: a bundle
+    with duplicate or fixed labels breaks every SLM that receives it.
     """
     try:
-        slm, base = _slm_for_check(with_slm)
+        slm, base = _slm_for_check(slm_check)
         _compile_for(slm, _State(fingerprint=_UNSET, effective=ServerPolicy(), base_rules=base), policy)
     except Exception as exc:
         log.warning("policy v%s failed the compile check (%s)",
@@ -490,25 +497,46 @@ def check_policy(policy: Optional[ActivePolicy], *, with_slm: bool = True) -> Op
     return None
 
 
-def runtime_status(policy: Optional[ActivePolicy]) -> dict:
-    """{"effective_version", "last_apply_error"} for /policy/current (codes only, no text).
+def _full_detection_available() -> bool:
+    from app.detectors import MODEL_DIR_ENV, SLM_DIR_ENV, cached_detector
 
-    effective_version is the policy version requests detect with. Before any request has
-    applied ``policy`` in this process it is what the next request will use.
+    return bool(os.getenv(MODEL_DIR_ENV) or os.getenv(SLM_DIR_ENV) or cached_detector(False) is not None)
+
+
+def runtime_status(policy: Optional[ActivePolicy]) -> dict:
+    """Effective versions and last apply errors for /policy/current (codes only, no text).
+
+    Per mode ("full", "rules_only"): the policy version that mode's requests detect
+    with. Before any request of a mode has applied ``policy`` in this process it is what
+    the next one will use; "full" is null when this server has no model configured.
+    ``effective_version`` / ``last_apply_error`` are the full detector's, or the
+    rules-only detector's when there is no full detector.
     """
     with _lock:
         fingerprint = _fingerprint(policy)
-        if _runtime["fingerprint"] == fingerprint:
-            effective = _runtime["effective_version"]
-        else:
-            code = check_policy(policy, with_slm=False)
+        has_full = _full_detection_available()
+        versions: dict = {}
+        for mode in MODES:
+            if mode == "full" and not has_full:
+                versions[mode] = None
+                continue
+            if _runtime[mode]["fingerprint"] == fingerprint:
+                versions[mode] = _runtime[mode]["effective_version"]
+                continue
+            code = check_policy(policy, slm_check="configured" if mode == "full" else "never")
             if code is None:
-                effective = getattr(policy, "version", None)
+                versions[mode] = getattr(policy, "version", None)
             else:
                 good = _last_good[0]
-                effective = good.version if good is not None else None
-                _record(policy, fingerprint, ServerPolicy(version=effective), code)
-        return {"effective_version": effective, "last_apply_error": _last_error[0]}
+                versions[mode] = good.version if good is not None else None
+                _record(mode, policy, fingerprint, versions[mode], code)
+        main = "full" if has_full else "rules_only"
+        return {
+            "effective_version": versions[main],
+            "last_apply_error": _last_error[main],
+            "effective_versions": versions,
+            "last_apply_errors": dict(_last_error),
+        }
 
 
 def apply_policy_to_detector(detector, policy: Optional[ActivePolicy]) -> ServerPolicy:
@@ -549,12 +577,12 @@ def apply_policy_to_detector(detector, policy: Optional[ActivePolicy]) -> Server
             # Remember the failed policy so it is not retried (and logged) on every request.
             state.fingerprint = fingerprint
             _remember(detector, state)
-            _record(policy, fingerprint, state.effective, _error_code(exc))
+            _record(_mode(detector), policy, fingerprint, state.effective.version, _error_code(exc))
             return state.effective
         _set_detector(detector, compiled)
         _last_good[0] = policy
         state.fingerprint = fingerprint
         state.effective = compiled
         _remember(detector, state)
-        _record(policy, fingerprint, compiled, None)
+        _record(_mode(detector), policy, fingerprint, compiled.version, None)
         return compiled

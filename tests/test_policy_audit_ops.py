@@ -116,16 +116,67 @@ def test_current_reports_effective_version_and_last_apply_error(client, monkeypa
     assert (current["version"], current["effective_version"], current["last_apply_error"]) == (2, 2, None)
 
     # With an SLM configured the server keeps v1 and says why, as a code only.
-    from app import policy_apply
-
-    monkeypatch.setitem(policy_apply._runtime, "fingerprint", "<reset>")
+    assert current["effective_versions"] == {"full": None, "rules_only": 2}
     monkeypatch.setenv("LOCAL_SLM_MODEL_DIR", "/nonexistent-slm-for-test")
     current = client.get("/policy/current").json()
     assert current["version"] == 2 and current["effective_version"] == 1
     error = current["last_apply_error"]
     assert error["version"] == 2 and error["code"] == "rule_label_conflict" and error["at"]
     assert set(error) == {"version", "code", "at"}
+    # Rules-only requests never run the SLM check: they are on v2 with no error.
+    assert current["effective_versions"] == {"full": 1, "rules_only": 2}
+    assert current["last_apply_errors"] == {"full": error, "rules_only": None}
     assert "고객 ID" not in json.dumps(current)
+
+
+def test_effective_version_is_tracked_per_detector_mode(client, monkeypatch):
+    """Codex review on #69: a full-detector failure must not relabel rules-only requests."""
+    import sys
+    from types import SimpleNamespace
+
+    from local_ai.slm import HERE, SlmSpanDetector
+
+    module = sys.modules["app.policy_apply"]
+    fixed = json.loads((HERE / "fixed_labels.json").read_text(encoding="utf-8"))["labels"]
+
+    class FakeSlm:
+        def __init__(self):
+            self.fixed = fixed
+            self.rules = {r["id"]: r for r in fixed}
+
+        def rules_view(self, rules):
+            return SlmSpanDetector.rules_view(self, rules)
+
+    class FakeDetector:
+        def __init__(self, full):
+            self.model_enabled = full
+            self._slm = FakeSlm() if full else None
+
+        def set_policy(self, **_):
+            pass
+
+    def policy(version, rules=()):
+        return SimpleNamespace(version=version, bundle_sha256=f"sha256:v{version}", types={},
+                               rules=list(rules), dict=[], exclude=[])
+
+    full, rules_only = FakeDetector(True), FakeDetector(False)
+    bad = policy(2, [rule("r1", "고객 ID"), rule("r2", "고객 ID")])
+    for det in (full, rules_only):
+        assert module.apply_policy_to_detector(det, policy(1)).version == 1
+    # The failure first, then the success: a single shared record got this wrong.
+    assert module.apply_policy_to_detector(full, bad).version == 1
+    assert module.apply_policy_to_detector(rules_only, bad).version == 2
+    monkeypatch.setenv("LOCAL_SLM_MODEL_DIR", "/nonexistent-slm-for-test")
+    status = module.runtime_status(bad)
+    assert status["effective_versions"] == {"full": 1, "rules_only": 2}
+    assert status["effective_version"] == 1  # the full detector's
+    assert status["last_apply_errors"]["full"]["code"] == "rule_label_conflict"
+    assert status["last_apply_errors"]["rules_only"] is None
+    # Without a full detector the top-level fields follow rules-only.
+    monkeypatch.delenv("LOCAL_SLM_MODEL_DIR")
+    status = module.runtime_status(bad)
+    assert status["effective_version"] == 2 and status["last_apply_error"] is None
+    assert status["effective_versions"] == {"full": None, "rules_only": 2}
 
 
 def test_current_reports_runtime_apply_failure(client, monkeypatch):
@@ -143,6 +194,7 @@ def test_current_reports_runtime_apply_failure(client, monkeypatch):
     current = client.get("/policy/current").json()
     assert current["effective_version"] == 1
     assert current["last_apply_error"]["code"] == "compile_failed"
+    assert current["effective_versions"] == {"full": None, "rules_only": 1}
     assert "boom" not in json.dumps(current)
 
 

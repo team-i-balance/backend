@@ -36,8 +36,10 @@
 
 | 필드 | 뜻 |
 |---|---|
-| `effective_version` | 지금 요청이 실제로 탐지에 쓰는 정책 버전. 활성 정책이 적용에 실패해 이전 정책이 쓰이면 `version`과 다릅니다. null은 정책 없이 기본 동작. 이 프로세스에서 아직 요청이 없었다면 다음 요청이 쓸 버전입니다. |
-| `last_apply_error` | 이 서버 프로세스에서 마지막으로 난 적용 실패 `{version, code, at}`. 코드는 `rule_label_conflict`(label·id 중복, 고정 라벨), `invalid_policy`(형식 오류), `compile_failed`(그 밖). 재시작하면 비워집니다. |
+| `effective_version` | 지금 요청이 실제로 탐지에 쓰는 정책 버전. 전체 탐지기(모델·SLM) 기준이고, 이 서버에 모델이 없으면 규칙만 탐지기 기준입니다. 활성 정책이 적용에 실패해 이전 정책이 쓰이면 `version`과 다릅니다. null은 정책 없이 기본 동작. 이 프로세스에서 아직 요청이 없었다면 다음 요청이 쓸 버전입니다. |
+| `last_apply_error` | `effective_version`과 같은 탐지기에서 마지막으로 난 적용 실패 `{version, code, at}`. 코드는 `rule_label_conflict`(label·id 중복, 고정 라벨), `invalid_policy`(형식 오류), `compile_failed`(그 밖). 재시작하면 비워집니다. |
+| `effective_versions` | 탐지기 모드별 버전 `{"full": n\|null, "rules_only": n\|null}`. 두 탐지기는 같은 활성 정책을 따로 적용하고 SLM 규칙 검사는 전체 탐지기만 하므로 서로 다를 수 있습니다(예: `rules_only=true` 요청은 v2, 전체 탐지는 v1). `full`이 null이면 이 서버에 전체 탐지기가 없습니다. |
+| `last_apply_errors` | 모드별 마지막 적용 실패 `{"full": …\|null, "rules_only": …\|null}`. 형식은 `last_apply_error`와 같습니다. |
 | `activated_by` | 이 정책을 `/policy/deploy`로 활성화한 보안팀 주체(#59). 그 전에 활성화된 정책은 null. |
 | `value_hash_key_set` | `POLICY_VALUE_HASH_KEY`가 설정됐는지(불리언만). false면 `hmac:` 고유 단어·탐지 제외 항목이 무시됩니다(#65). |
 

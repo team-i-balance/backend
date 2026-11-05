@@ -82,6 +82,11 @@ class PolicyCurrent(PolicyInfo):
     # failed to apply and the previous one stays in effect (null: no policy in effect).
     effective_version: Optional[int] = None
     last_apply_error: Optional[ApplyError] = None
+    # Per detector mode ("full", "rules_only"): they apply the policy separately and only
+    # the full one runs the SLM check. The two fields above are the full detector's, or the
+    # rules-only detector's when this server has no model. "full" null: no full detector.
+    effective_versions: dict[str, Optional[int]] = {}
+    last_apply_errors: dict[str, Optional[ApplyError]] = {}
     # POLICY_VALUE_HASH_KEY is set: "hmac:" dict/exclude entries apply (else skipped).
     value_hash_key_set: bool = False
 

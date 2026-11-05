@@ -33,7 +33,7 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | POST   | `/false-positives/{value_hash}/decide` | security | 오탐 신고 묶음 판단 |
 | GET    | `/policy/latest` | api | 최신 서명 번들. `ETag: "sha256:…"`, `If-None-Match`가 맞으면 304 |
 | GET    | `/policy/{version}` | api | 특정 버전 번들(감사·재현) |
-| GET    | `/policy/current` | api | 활성 정책 메타 + 실제 탐지에 쓰는 버전(`effective_version`)·마지막 적용 오류 코드(`last_apply_error`)·`activated_by`·`value_hash_key_set`([정책 적용 문서](docs/policy-apply.md#배포-전-컴파일-확인과-적용-상태-64)) |
+| GET    | `/policy/current` | api | 활성 정책 메타 + 실제 탐지에 쓰는 버전(`effective_version`, 모드별 `effective_versions`)·마지막 적용 오류 코드(`last_apply_error`, 모드별 `last_apply_errors`)·`activated_by`·`value_hash_key_set`([정책 적용 문서](docs/policy-apply.md#배포-전-컴파일-확인과-적용-상태-64)) |
 | POST   | `/policy/deploy` | security | 저장된 번들을 검증·컴파일한 뒤 서버 탐지에 활성화. 서버가 적용할 수 없으면 `accepted=false, reason="compile_failed"` |
 | GET    | `/policy/history` | security | 발행된 번들 목록(최신순): 버전·`sha256`·저장 시각·규칙 수·발행자(`published_by`) |
 | GET    | `/policy/acks` | security | PC 적용/거부 집계(`?version=N`으로 한 버전만) |

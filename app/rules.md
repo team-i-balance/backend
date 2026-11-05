@@ -157,7 +157,7 @@ PC 측:
 | Method | Path | 설명 |
 | --- | --- | --- |
 | POST | `/policy/deploy` | (security) 번들 검증·컴파일 → 통과+최신이면 적용, 아니면 거부(사유 코드, 서버가 적용 못 하면 `compile_failed`) |
-| GET | `/policy/current` | 현재 활성 정책 메타(org·version·keyid·규칙 수·만료·적용 시각) + `effective_version`·`last_apply_error`·`value_hash_key_set` |
+| GET | `/policy/current` | 현재 활성 정책 메타(org·version·keyid·규칙 수·만료·적용 시각) + `effective_version(s)`·`last_apply_error(s)`(탐지기 모드별)·`value_hash_key_set` |
 
 백엔드(콘솔) 측:
 
