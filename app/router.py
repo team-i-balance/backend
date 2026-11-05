@@ -2,11 +2,15 @@
 
 Mounted under /logs in main.py.
 """
+import os
+import re
+import stat
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 
-from app import changes, crud
+from app import changes, crud, crypto
 from app.auth import require_api, require_security
 from app.crypto import encrypt_records, public_key_fingerprint
 from app.etag import if_none_match_hits, quote_etag
@@ -141,3 +145,38 @@ def export_logs(
         public_key_fingerprint=public_key_fingerprint(),
         next_cursor=next_cursor,
     )
+
+
+# Only files /logs/export writes: a plain name ending in .enc.json, no directories.
+_EXPORT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}\.enc\.json$")
+
+
+@router.get("/exports/{name}", dependencies=[Depends(require_security)])
+def download_export(name: str):
+    """Download one encrypted export file (security only, #65).
+
+    ``name`` is the file name from POST /logs/export's ``file``. Only regular
+    ``*.enc.json`` files directly inside the export folder are served; the content is
+    the encrypted envelope as written (decrypt it with the security team's key).
+    """
+    if not _EXPORT_NAME.match(name):
+        raise HTTPException(status_code=404, detail="unknown export")
+    folder = Path(crypto.EXPORT_DIR).resolve()
+    path = folder / name
+    if path.parent.resolve() != folder:
+        raise HTTPException(status_code=404, detail="unknown export")
+    try:
+        # O_NOFOLLOW: a symlink planted in the folder is refused, not followed.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        raise HTTPException(status_code=404, detail="unknown export") from None
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise HTTPException(status_code=404, detail="unknown export")
+    with os.fdopen(fd, "rb") as stream:
+        data = stream.read()
+    return Response(content=data, media_type="application/json", headers={
+        "Content-Disposition": f'attachment; filename="{name}"',
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    })

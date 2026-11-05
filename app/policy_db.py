@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS policy_bundle (
     envelope TEXT NOT NULL,
     sha256 TEXT NOT NULL,
     stored_at TEXT,
-    rule_count INTEGER NOT NULL DEFAULT 0
+    rule_count INTEGER NOT NULL DEFAULT 0,
+    published_by TEXT
 );
 CREATE TABLE IF NOT EXISTS policy_active (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -55,6 +56,19 @@ CREATE TABLE IF NOT EXISTS policy_console_state (
 """
 
 
+def _migrate(conn) -> None:
+    """Add columns introduced after a database was created (existing rows keep NULL)."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(policy_bundle)")}
+    if "published_by" not in columns:  # #59: who published each bundle
+        try:
+            conn.execute("ALTER TABLE policy_bundle ADD COLUMN published_by TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            # Another worker added it first.
+            if "published_by" not in {row[1] for row in conn.execute("PRAGMA table_info(policy_bundle)")}:
+                raise
+
+
 class PolicyDatabase:
     def __init__(self, path: Path | str | None):
         self.path = Path(path) if path is not None else None
@@ -78,6 +92,7 @@ class PolicyDatabase:
             conn = self._memory if self._memory is not None else self._connect(self.path)
             try:
                 conn.executescript(SCHEMA)
+                _migrate(conn)
             finally:
                 if self._memory is None:
                     conn.close()

@@ -322,6 +322,8 @@ def test_failed_apply_logs_the_version_actually_used(api, monkeypatch):
     real = module.compile_policy
     monkeypatch.setattr(module, "compile_policy",
                         lambda p: real(p) if p.version == 1 else (_ for _ in ()).throw(RuntimeError("boom")))
+    # Deploy now refuses what fails to compile (#64); bypass it to simulate a runtime-only failure.
+    monkeypatch.setattr(module, "check_policy", lambda *a, **k: None)
     _deploy(client, version=2)
     work = client.post("/process", json={"text": PHONE, "rules_only": True}).json()
     assert work["detected_types"] == []  # v1 still detects

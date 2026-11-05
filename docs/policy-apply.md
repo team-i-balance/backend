@@ -23,6 +23,28 @@
   로그에는 버전과 예외 종류만 남고, 정책 내용·값·해시는 남지 않습니다.
 - 이 변경 전에 활성화된 정책은 DB에 `dict`·`exclude`가 없습니다. 그런 정책은 다음 배포부터 반영됩니다.
 
+## 배포 전 컴파일 확인과 적용 상태 (#64)
+
+- `POST /policy/deploy`는 서명·버전 검사를 통과한 번들을 활성화하기 **전에** 서버 탐지기와 같은 경로
+  (`compile_policy` + SLM `rules_view`)로 컴파일해 봅니다(`app/policy_apply.py`의 `check_policy`).
+  실패하면 `{"accepted": false, "reason": "compile_failed"}`로 거절하고 이전 정책을 그대로 둡니다.
+  - SLM이 떠 있으면 그 SLM이 로드한 규칙으로, 아직 안 떴거나 이 서버에 SLM이 없어도
+    고정 라벨(`local_ai/slm/fixed_labels.json`)과 `LOCAL_SLM_POLICY`(없으면 예시 정책) 규칙으로 같은 검사를 합니다.
+    label·id 중복과 고정 라벨(사람 이름·주소·개인 민감정보) 재사용은 SLM을 쓰는 모든 곳에서 깨지므로 항상 거절합니다.
+- `POST /policy/publish`도 서명하기 전에 같은 검사를 합니다. 실패하면 422 `POLICY_COMPILE_FAILED`이고 초안은 남습니다.
+- `GET /policy/current`에 아래 필드가 더 있습니다. 정책 내용이나 예외 문구는 넣지 않습니다.
+
+| 필드 | 뜻 |
+|---|---|
+| `effective_version` | 지금 요청이 실제로 탐지에 쓰는 정책 버전. 활성 정책이 적용에 실패해 이전 정책이 쓰이면 `version`과 다릅니다. null은 정책 없이 기본 동작. 이 프로세스에서 아직 요청이 없었다면 다음 요청이 쓸 버전입니다. |
+| `last_apply_error` | 이 서버 프로세스에서 마지막으로 난 적용 실패 `{version, code, at}`. 코드는 `rule_label_conflict`(label·id 중복, 고정 라벨), `invalid_policy`(형식 오류), `compile_failed`(그 밖). 재시작하면 비워집니다. |
+| `activated_by` | 이 정책을 `/policy/deploy`로 활성화한 보안팀 주체(#59). 그 전에 활성화된 정책은 null. |
+| `value_hash_key_set` | `POLICY_VALUE_HASH_KEY`가 설정됐는지(불리언만). false면 `hmac:` 고유 단어·탐지 제외 항목이 무시됩니다(#65). |
+
+- 이 변경 전에 활성화돼 이미 DB에 있는 정책은 검사 없이 남아 있을 수 있습니다. 그런 정책이 실패하면
+  `effective_version`과 `last_apply_error`로 드러납니다. 콘솔은 `version != effective_version`이면
+  "서버 적용 실패"로 보여 주면 됩니다.
+
 ## 필드별 적용 위치
 
 | payload 필드 | 서버(`/process`·`/files/sanitize`) | PC 에이전트 | 서버 구현 |

@@ -23,6 +23,11 @@ Hashes (docs: BUNDLE-SPEC.md section 3, `dict`/`exclude`):
 Application is atomic per detector: everything is validated and compiled first;
 if anything fails (e.g. the SLM rejects a duplicate rule label) the detector keeps
 the previous policy and a warning is logged. Policy content is never logged.
+
+``check_policy`` runs the same compile (including the SLM label check) before
+/policy/deploy activates a bundle and before /policy/publish signs one (#64), and
+``runtime_status`` reports the version requests actually use plus the last apply
+error code for /policy/current.
 """
 from __future__ import annotations
 
@@ -35,6 +40,8 @@ import re
 import threading
 import weakref
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:  # typing only: keeps this module importable without the signing stack
@@ -414,6 +421,96 @@ def _compile_for(slm, state: _State, policy) -> ServerPolicy:
     return compiled
 
 
+def _error_code(exc: Exception) -> str:
+    """A fixed code for an apply failure. Exception text may quote policy content: never kept."""
+    if isinstance(exc, PolicyApplyError):
+        return "invalid_policy"
+    if isinstance(exc, ValueError):  # SlmSpanDetector.rules_view: duplicate / fixed label or id
+        return "rule_label_conflict"
+    return "compile_failed"
+
+
+# Last apply outcome in this process (#64): what requests use for the active policy.
+_runtime: dict = {"fingerprint": _UNSET, "effective_version": None, "error": None}
+_last_error: list = [None]   # {"version", "code", "at"} of the most recent failure
+
+
+def _record(policy, fingerprint, effective: ServerPolicy, code: Optional[str]) -> None:
+    # Several detectors (rules-only, full) share one active policy; a failure in any of
+    # them is what the operator needs to see, so a success does not hide it.
+    if _runtime["fingerprint"] != fingerprint or code is not None or _runtime["error"] is None:
+        _runtime.update(fingerprint=fingerprint, effective_version=effective.version, error=code)
+    if code is not None:
+        _last_error[0] = {"version": getattr(policy, "version", None), "code": code,
+                          "at": datetime.now(timezone.utc).isoformat()}
+
+
+def _slm_for_check(always: bool):
+    """(slm, base rules) the full detector applies policies with, without loading a model.
+
+    Uses the running SLM when it is loaded. Otherwise the same validation runs over the
+    fixed labels and the LOCAL_SLM_POLICY (or bundled example) rules the SLM would load,
+    so a bundle is checked identically whether or not the model is up yet. With
+    ``always=False`` a server without an SLM configured skips the SLM check (what runs).
+    """
+    from app.detectors import SLM_DIR_ENV, SLM_POLICY_ENV, cached_detector
+
+    detector = cached_detector(False)
+    slm = getattr(detector, "_slm", None)
+    if slm is not None and isinstance(getattr(slm, "rules", None), dict) and hasattr(slm, "rules_view"):
+        return slm, [r for rid, r in slm.rules.items() if not rid.startswith("P-")]
+    if not always and not os.getenv(SLM_DIR_ENV):
+        return None, None
+    from local_ai.slm import HERE, SlmSpanDetector, load_policy
+
+    fixed = json.loads((HERE / "fixed_labels.json").read_text(encoding="utf-8"))["labels"]
+    try:
+        base = load_policy(os.getenv(SLM_POLICY_ENV) or HERE / "policy.example.json")
+    except Exception:
+        base = []  # The SLM itself would not load with this file; nothing to merge.
+    stub = SimpleNamespace(fixed=fixed)
+    stub.rules_view = lambda rules: SlmSpanDetector.rules_view(stub, rules)
+    return stub, base
+
+
+def check_policy(policy: Optional[ActivePolicy], *, with_slm: bool = True) -> Optional[str]:
+    """Compile ``policy`` as the server detectors would; None if it applies, else an error code.
+
+    Never raises and never changes a detector. Used before activating or signing (#64).
+    The SLM rule-label check runs even on a server without the SLM (``with_slm=True``): a
+    bundle with duplicate or fixed labels breaks every SLM that receives it.
+    """
+    try:
+        slm, base = _slm_for_check(with_slm)
+        _compile_for(slm, _State(fingerprint=_UNSET, effective=ServerPolicy(), base_rules=base), policy)
+    except Exception as exc:
+        log.warning("policy v%s failed the compile check (%s)",
+                    getattr(policy, "version", None), type(exc).__name__)
+        return _error_code(exc)
+    return None
+
+
+def runtime_status(policy: Optional[ActivePolicy]) -> dict:
+    """{"effective_version", "last_apply_error"} for /policy/current (codes only, no text).
+
+    effective_version is the policy version requests detect with. Before any request has
+    applied ``policy`` in this process it is what the next request will use.
+    """
+    with _lock:
+        fingerprint = _fingerprint(policy)
+        if _runtime["fingerprint"] == fingerprint:
+            effective = _runtime["effective_version"]
+        else:
+            code = check_policy(policy, with_slm=False)
+            if code is None:
+                effective = getattr(policy, "version", None)
+            else:
+                good = _last_good[0]
+                effective = good.version if good is not None else None
+                _record(policy, fingerprint, ServerPolicy(version=effective), code)
+        return {"effective_version": effective, "last_apply_error": _last_error[0]}
+
+
 def apply_policy_to_detector(detector, policy: Optional[ActivePolicy]) -> ServerPolicy:
     """Compile the active policy for a detector (cached while the policy is unchanged).
 
@@ -452,10 +549,12 @@ def apply_policy_to_detector(detector, policy: Optional[ActivePolicy]) -> Server
             # Remember the failed policy so it is not retried (and logged) on every request.
             state.fingerprint = fingerprint
             _remember(detector, state)
+            _record(policy, fingerprint, state.effective, _error_code(exc))
             return state.effective
         _set_detector(detector, compiled)
         _last_good[0] = policy
         state.fingerprint = fingerprint
         state.effective = compiled
         _remember(detector, state)
+        _record(policy, fingerprint, compiled, None)
         return compiled

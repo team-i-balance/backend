@@ -16,6 +16,7 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | GET    | `/logs/stats` | security | 기간별 통계 및 행동·등급·큐별 건수 |
 | GET    | `/logs/changes` | security | 콘솔 폴링용 영역별 변경 표시값, `If-None-Match`가 맞으면 304 ([문서](docs/changes-api.md)) |
 | POST   | `/logs/export` | security | 보안팀 공개키로 암호화한 로그 파일 생성. 큐·기간(`start`/`end`) 필터, `limit`(기본 1,000·최대 10,000), `cursor`/`next_cursor` 페이지 넘김 |
+| GET    | `/logs/exports/{name}` | security | `/logs/export`가 만든 암호화 파일(`file`의 파일 이름) 내려받기. 내보내기 폴더 바로 아래 `*.enc.json`만, `no-store`, 없거나 형식이 다르면 404 |
 | POST   | `/events/{event_id}/reason` | api | 민감 원문 전송 후 직원 사유 제출·저장 |
 | GET    | `/events/{event_id}/reason` | api | 사유 필요 여부·재요청 시각(`reason_requested_at`) 조회, `no-store` ([문서](docs/event-reason-api.md)) |
 | POST   | `/events/{event_id}/reason-request` | security | 보안팀이 직원에게 사유 재요청 |
@@ -31,16 +32,21 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | GET    | `/false-positives` | security | 오탐 신고를 값 해시별로 묶은 목록, `limit`/`cursor`(`last_event_id`) 페이지 넘김 ([문서](docs/false-positive-api.md)) |
 | POST   | `/false-positives/{value_hash}/decide` | security | 오탐 신고 묶음 판단 |
 | GET    | `/policy/latest` | api | 최신 서명 번들. `ETag: "sha256:…"`, `If-None-Match`가 맞으면 304 |
-| GET    | `/policy/history` | security | 발행된 번들 목록(최신순): 버전·`sha256`·저장 시각·규칙 수 |
+| GET    | `/policy/{version}` | api | 특정 버전 번들(감사·재현) |
+| GET    | `/policy/current` | api | 활성 정책 메타 + 실제 탐지에 쓰는 버전(`effective_version`)·마지막 적용 오류 코드(`last_apply_error`)·`activated_by`·`value_hash_key_set`([정책 적용 문서](docs/policy-apply.md#배포-전-컴파일-확인과-적용-상태-64)) |
+| POST   | `/policy/deploy` | security | 저장된 번들을 검증·컴파일한 뒤 서버 탐지에 활성화. 서버가 적용할 수 없으면 `accepted=false, reason="compile_failed"` |
+| GET    | `/policy/history` | security | 발행된 번들 목록(최신순): 버전·`sha256`·저장 시각·규칙 수·발행자(`published_by`) |
 | GET    | `/policy/acks` | security | PC 적용/거부 집계(`?version=N`으로 한 버전만) |
 | GET    | `/policy/{version}/acks` | security | 한 버전의 기기 수·applied·rejected·거부 사유별 건수 |
 | GET    | `/policy/draft` | security | 저장된 정책 초안과 변경 목록, ETag 조회 |
 | PUT    | `/policy/draft` | security | If-Match로 동시 수정을 확인하고 초안 전체 저장 |
-| POST   | `/policy/publish` | security | 저장된 초안 또는 직접 전달한 payload 서명·발행 |
+| POST   | `/policy/publish` | security | 저장된 초안 또는 직접 전달한 payload 서명·발행. 서버가 적용할 수 없는 정책은 422 `POLICY_COMPILE_FAILED` |
+| POST   | `/policy/ack`, GET `/policy/acks` | api / security | PC 적용 결과 기록·집계(직원 프로그램이 아직 쓰지 않음, 유지 여부는 #65에서 결정) |
 
 파일 API의 요청·응답, 오류 코드, 내부 AI 전송 연결 방법은 [파일 API 문서](docs/file-api.md)를 참고하세요.
 검토 대상 기준, 요청·응답과 콘솔 연결 방법은 [보안팀 검토 API 문서](docs/case-api.md)를 참고하세요.
 검토 상태는 기존 `LOG_DB_PATH`에 영구 저장합니다. 처리자는 검증된 security 토큰의 라벨로 기록합니다(#45 이전 이력은 `unauthenticated`).
+정책 초안 변경(`changes[].by`·`updated_by`), 발행(`published_by`), 서버 활성화(`activated_by`)도 같은 라벨(`security:<sha256 12자리>`, 즉석 발급 토큰은 `security-dev:…`)로 남깁니다(#59). 그 전에 저장된 초안 변경은 `unauthenticated`, 발행·활성화 기록은 null입니다.
 기존 텍스트·로그 API를 포함한 전체 명세는 서버의 `/docs`에서 확인할 수 있습니다.
 최근 7일 집계와 1,000건 이상의 목록 조회는 [로그 통계·페이지 넘김 문서](docs/log-stats-api.md)를 참고하세요.
 원문 전송 후 사유 제출 흐름, 추가 응답 필드와 재시도 규칙은 [직원 사유 API 문서](docs/event-reason-api.md)를 참고하세요.
@@ -176,6 +182,9 @@ LibreOffice Calc의 기본 계산 설정과 빈 머리글·바닥글 및 빈 사
   운영에서는 DB와 기존 키를 모두 영구 경로에 보관하세요. [저장·이전 안내](docs/policy-persistence.md).
 - `POLICY_VALUE_HASH_KEY`: 정책 `dict`·`exclude`의 `hmac:` 항목(이벤트 `value_hash`)을 비교할 조직 키.
   PC 에이전트가 `value_hash`를 만들 때 쓰는 키와 같아야 합니다. 없으면 `hmac:` 항목은 무시하고 경고만 남깁니다.
+  설정 여부(값은 아님)는 `GET /policy/current`의 `value_hash_key_set`으로 확인합니다.
+- `POLICY_KEY_ID`: 정책 서명 키 이름(번들 `signatures[].keyid`, 키 파일 이름). 기본값 `console-demo`.
+  바꿀 때는 기존 키 파일을 새 이름으로 **복사**하고 옛 공개키를 남겨 두세요([안내](docs/policy-persistence.md#서명-키-이름-바꾸기-policy_key_id)).
 - `ALLOWED_ORIGINS`: CORS 허용 오리진(콤마 구분). 기본값 `*`.
   배포 시 프론트엔드 주소로 지정하세요. 예: `https://your-app.vercel.app`
 

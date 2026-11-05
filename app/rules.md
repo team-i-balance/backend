@@ -156,8 +156,8 @@ PC 측:
 
 | Method | Path | 설명 |
 | --- | --- | --- |
-| POST | `/policy/deploy` | 번들 검증 → 통과+최신이면 적용, 아니면 거부(사유 코드) |
-| GET | `/policy/current` | 현재 활성 정책 메타(org·version·keyid·규칙 수·만료·적용 시각) |
+| POST | `/policy/deploy` | (security) 번들 검증·컴파일 → 통과+최신이면 적용, 아니면 거부(사유 코드, 서버가 적용 못 하면 `compile_failed`) |
+| GET | `/policy/current` | 현재 활성 정책 메타(org·version·keyid·규칙 수·만료·적용 시각) + `effective_version`·`last_apply_error`·`value_hash_key_set` |
 
 백엔드(콘솔) 측:
 
@@ -198,8 +198,8 @@ Bearer 토큰으로 보호한다. 토큰이 없거나 유효하지 않으면 401
 
 | scope | 대상 엔드포인트 |
 | --- | --- |
-| `api` | `POST /process*`, `POST /files/*`, `POST /logs/events`, `POST /policy/deploy`, `POST /policy/ack`, 정책 읽기(`GET /policy/current|latest|{version}|model/latest`) |
-| `security` | 로그 조회·내보내기(`GET /logs/*`, `POST /logs/export`), `GET /policy/acks`, 정책 쓰기(`POST /policy/publish`, `POST /policy/model/publish`) |
+| `api` | `POST /process*`, `POST /files/*`, `POST /logs/events`, `POST /policy/ack`, 정책 읽기(`GET /policy/current|latest|{version}|model/latest`) |
+| `security` | 로그 조회·내보내기(`GET /logs/*`, `POST /logs/export`, `GET /logs/exports/{name}`), `GET /policy/acks`, 정책 쓰기(`PUT /policy/draft`, `POST /policy/publish`, `POST /policy/deploy`, `POST /policy/model/publish`) |
 
 - security 토큰은 api scope도 만족한다(상위 포함).
 - 토큰 출처: 환경변수 `API_TOKENS` / `SECURITY_TOKENS`(콤마 구분) + 런타임
