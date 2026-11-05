@@ -391,3 +391,45 @@ class LocalCodexRound2Tests(unittest.TestCase):
     def test_other_date_word_before_birth_label(self):
         r = self.run_('등록일 미상 생년월일: 1990-03-15')
         self.assertNotIn('1990-03-15', r.text)
+
+
+class GithubCodexRound6Tests(unittest.TestCase):
+    def run_(self, text):
+        with LocalSession(Detector(None)) as s:
+            return s.process(text)
+
+    def test_quoted_key_after_empty_password(self):
+        r = self.run_('password:\n"username": "alice"')
+        self.assertIn('username', r.text)
+        self.assertNotIn('PASSWORD', r.detection_types)
+        self.assertNotIn('s3cret!x', self.run_('password:\n"pw2": "s3cret!x"').text)
+        self.assertNotIn('Zx9!kq77', self.run_('비밀번호:\n"Zx9!kq77"').text)
+
+    def test_ascii_context_words_are_whole_words(self):
+        for text in ['accounting code 1234567890', 'bankruptcy case 1234567890']:
+            self.assertNotIn('ACCOUNT', self.run_(text).detection_types, text)
+        self.assertIn('ACCOUNT', self.run_('bank account 1234567890').detection_types)
+
+
+class LocalCodexRound3Tests(unittest.TestCase):
+    def run_(self, text):
+        with LocalSession(Detector(None)) as s:
+            return s.process(text)
+
+    def test_english_birth_labels(self):
+        for text in ['birthday: 1990-03-15', 'birthdate: 1990-03-15', 'date of birth 1990-03-15']:
+            self.assertNotIn('1990-03-15', self.run_(text).text, text)
+
+    def test_yaml_secrets_on_next_line(self):
+        r = self.run_('client_secret:\n  "Zx9!kq77"\nauth_token:\n  "Ab7!pq93"')
+        self.assertNotIn('Zx9!kq77', r.text)
+        self.assertNotIn('Ab7!pq93', r.text)
+
+
+class LocalCodexRound4Tests(unittest.TestCase):
+    def test_base64_secret_with_padding(self):
+        for text in ['auth_token=YWJjZA==', 'password=abc=', 'api_key: "QUJD=="']:
+            with LocalSession(Detector(None)) as s:
+                r = s.process(text)
+            self.assertFalse(r.text.endswith('='), (text, r.text))
+            self.assertNotIn('YWJj', r.text)

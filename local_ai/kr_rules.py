@@ -45,8 +45,8 @@ def _ctx(text, start, end, words, before=25, after=12, pattern=None):
         return True
     for w in words:
         if w.isascii():
-            # Left boundary only, so 'nh' does not hit 'enhance'.
-            if re.search(r'(?<![a-z])' + re.escape(w), seg):
+            # Whole word only: 'nh' must not hit 'enhance', 'account' not 'accounting'.
+            if re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', seg):
                 return True
         elif w in seg:
             return True
@@ -56,7 +56,7 @@ def _ctx(text, start, end, words, before=25, after=12, pattern=None):
 def _last_pos(seg, words, pattern=None):
     pos = -1
     for w in words:
-        rx = r'(?<![a-z])' + re.escape(w) if w.isascii() else re.escape(w)
+        rx = r'(?<![a-z])' + re.escape(w) + r'(?![a-z])' if w.isascii() else re.escape(w)
         for m in re.finditer(rx, seg):
             pos = max(pos, m.start())
     if pattern is not None:
@@ -100,7 +100,7 @@ _NEG_CTX = ['주문번호', '송장', '운송장', '사번', '회원번호', '�
             '승인번호', '거래번호', 'order', 'invoice', 'tracking', 'sku', 'id:', 'build', 'commit']
 # ID numbers also drop on the bare words; an explicit ID label still wins (_ID_LABELS).
 _ID_NEG_CTX = _NEG_CTX + ['주문', '접수']
-_DOB_CTX = ['생년월일', '생일', '출생', '생년', '태어난', 'dob', 'birth']
+_DOB_CTX = ['생년월일', '생일', '출생', '생년', '태어난', 'dob', 'birth', 'birthday', 'birthdate', 'birth_date']
 
 
 # ---- ID number (resident / foreigner registration)
@@ -347,10 +347,9 @@ def _scan(rx, text):
     pos = 0
     while (m := rx.search(text, pos)) is not None:
         yield m
-        if m.group('v') is not None and m.group('sep') is not None \
-                and '\n' in text[m.end('sep'):m.start('v')]:
+        if m.group('sep') is not None and '\n' in text[m.end('sep'):m.end()]:
             # The value came from the next line: rescan that line ("password:\npassword2: x").
-            pos = m.start('v')
+            pos = text.index('\n', m.end('sep')) + 1
         elif m.group('v') is not None:
             pos = max(m.start() + 1, m.start('v') + len(_cut_at_delimiter(m.group('v'))))
         else:
@@ -358,14 +357,19 @@ def _scan(rx, text):
 
 
 def _next_line_key(m, g):
-    """A value taken from the next line ("password:\nusername: alice") that is itself a key."""
-    return '\n' in m.string[m.end('sep'):m.start(g)] and bool(re.match(r'[^\s"\'`:=]+[:=]', m.group(g)))
+    """A value taken from the next line that is itself a key: 'password:\nusername: alice' or
+    'password:\n"username": "alice"'."""
+    if '\n' not in m.string[m.start('sep'):m.start(g)]:
+        return False
+    if g == 'v':
+        return bool(re.match(r'[^\s"\'`:=]+[:=]', m.group(g)))
+    return bool(re.match(r'[ \t]*[:=]', m.string[m.end(g) + 1:]))
 
 
 def _passwords(text):
     for m in _scan(_PW_KV_RE, text):
         g, val = _quoted(m)
-        if g is None and _next_line_key(m, 'v'):
+        if _next_line_key(m, g or 'v'):
             continue
         if g is None:
             g, val = 'v', _bare_pw(m.group('v'), assignment=m.group('sep') != ':' and m.group('sep') != '：')
@@ -376,7 +380,7 @@ def _passwords(text):
             yield _cand('PASSWORD', m.start('pw'), m.end('pw'), 0.95)
     for m in _scan(_KO_PW_RE, text):
         g, val = _quoted(m)
-        if g is None and m.group('sep') is not None and _next_line_key(m, 'v'):
+        if m.group('sep') is not None and _next_line_key(m, g or 'v'):
             continue
         if g is None:
             g, val = 'v', _bare_pw(m.group('v'), assignment=m.group('sep') == '=')
