@@ -21,6 +21,7 @@ def _row_to_dict(row) -> dict:
     d["detected_types"] = json.loads(d.get("detected_types") or "[]")
     d["reverted"] = bool(d["reverted"])
     d["restored"] = bool(d["restored"])
+    d["items"] = json.loads(d.get("items") or "[]")
     d["test"] = bool(d.pop("is_test", 0))
     return d
 
@@ -29,14 +30,20 @@ def insert_event(event: EventIn) -> dict:
     queue = classify(event)
     created_at = _now_utc_iso()
 
+    items_json = json.dumps(
+        [item.model_dump(exclude_none=True) for item in event.items],
+        ensure_ascii=False,
+    )
+
     with get_conn() as conn:
         cur = conn.execute(
             """
             INSERT INTO event_log (
                 created_at, request_id, grade, action, reason,
                 detection_confidence, detected_types, detected_count,
-                reverted, restored, content_hash, queue, is_test, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                reverted, restored, content_hash, queue,
+                user_id, dept, target_ai, device_id, reason_text, items, is_test, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -53,6 +60,12 @@ def insert_event(event: EventIn) -> dict:
                 int(event.restored),
                 event.content_hash,
                 queue.value,
+                event.user_id,
+                event.dept,
+                event.target_ai,
+                event.device_id,
+                event.reason_text,
+                items_json,
                 int(event.test),
                 event.source.value,
             ),

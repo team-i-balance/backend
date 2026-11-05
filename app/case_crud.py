@@ -42,6 +42,7 @@ class CaseError(Exception):
 def _case(row) -> dict:
     event = {k: row[k] for k in row.keys() if not k.startswith("review_")}
     event["detected_types"] = json.loads(event["detected_types"])
+    event["items"] = json.loads(event.get("items") or "[]")
     event["reverted"] = bool(event["reverted"])
     event["restored"] = bool(event["restored"])
     # Same field name as /logs/events (EventOut.test); test events never become cases.

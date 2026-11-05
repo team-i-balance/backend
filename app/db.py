@@ -29,7 +29,14 @@ CREATE TABLE IF NOT EXISTS event_log (
     restored        INTEGER NOT NULL DEFAULT 0,
     content_hash    TEXT,
     queue           TEXT    NOT NULL,
-    is_test         INTEGER NOT NULL DEFAULT 0
+    is_test         INTEGER NOT NULL DEFAULT 0,
+    -- Context fields (issue #21)
+    user_id         TEXT,
+    dept            TEXT,
+    target_ai       TEXT,
+    device_id       TEXT,
+    reason_text     TEXT,
+    items           TEXT    NOT NULL DEFAULT '[]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_created_at ON event_log (created_at);
@@ -95,7 +102,7 @@ def _migrate_is_test(conn) -> None:
 
 
 def init_db() -> None:
-    """Create tables; add reason tracking and the is_test flag to existing event databases."""
+    """Create tables and migrate event context, reason tracking, source and test flags."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
@@ -103,12 +110,18 @@ def init_db() -> None:
         # reason_text is also used by event-context metadata (issue #21).
         conn.execute("BEGIN IMMEDIATE")
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(event_log)")}
-        for name in ("reason_requested_at", "reason_at", "reason_text"):
+        for name in ("reason_requested_at", "reason_at", "reason_text",
+                     "user_id", "dept", "target_ai", "device_id"):
             if name not in columns:
                 conn.execute(f"ALTER TABLE event_log ADD COLUMN {name} TEXT")
+        if "items" not in columns:
+            conn.execute("ALTER TABLE event_log ADD COLUMN items TEXT NOT NULL DEFAULT '[]'")
         if "source" not in columns:
             # Which flow produced the event (issue #32); all earlier rows are text events.
             conn.execute("ALTER TABLE event_log ADD COLUMN source TEXT NOT NULL DEFAULT 'text'")
+        # Older databases lack user_id until the migrations above finish.
+        # Keep the new index in the same transaction; don't hide DDL failures.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_event_user_id ON event_log (user_id)")
         # Older rows have no independent request/submission timestamps. Use
         # event creation time for their initial waiting state / initial reason.
         conn.execute("""
@@ -120,7 +133,7 @@ def init_db() -> None:
             UPDATE event_log SET reason_at = created_at
             WHERE reason IS NOT NULL AND reason_at IS NULL
         """)
-        # Finish the reason migration's transaction before the is_test migration opens its own.
+        # Finish this transaction before the is_test migration opens its own.
         conn.commit()
         _migrate_is_test(conn)
 

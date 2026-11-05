@@ -91,7 +91,9 @@ GET /cases/INC-42
   `event.reason_text` 본문, `event.reason_requested_at` 대기 시작 시각,
   `event.reason_at` 제출 시각으로 읽습니다. 제출 방법은 [직원 사유 API](event-reason-api.md)를 참고하세요.
   사유가 늦게 도착해도 기존 보안팀 결론과 처리 이력은 바뀌지 않습니다.
-  원문·직원 이름·부서는 아직 이벤트에 없으며 만들어내지 않습니다.
+  선택 컨텍스트 `user_id`, `dept`, `target_ai`, `device_id`와 항목별 `items`도 함께 반환합니다.
+  예전 이벤트의 컨텍스트는 `null`, `items`는 빈 배열입니다. `user_id` 등은 클라이언트가
+  전달한 메타데이터이며 인증된 처리자 정보가 아닙니다. 직원 이름·원문을 만들어내지 않습니다.
 - `status`는 `open` 또는 `closed`, 열린 건의 `close`는 `null`입니다.
 - `history`는 시간 순(이력 ID 오름차순)의 전체 종결·다시 열기 기록입니다.
   다시 열기 기록은 `conclusion`/`cause`/`memo`/`rule`이 모두 `null`입니다.
