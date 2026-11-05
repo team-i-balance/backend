@@ -336,7 +336,8 @@ class Detector:
                     merged[-1]['_raw'] = 'NAME'
                 else:
                     merged.append(span)
-            results.extend({k: v for k, v in span.items() if k != '_raw'} for span in merged)
+            results.extend(_trim_korean_particle(text, {k: v for k, v in span.items() if k != '_raw'})
+                           for span in merged)
         return results
 
 
