@@ -46,6 +46,10 @@ from app.sessions import store
 
 # Optional local model directory. If unset, only rules_only mode is available.
 MODEL_DIR_ENV = "LOCAL_PII_MODEL_DIR"
+# Optional confidential-policy SLM (local_ai/slm) folder and policy JSON.
+# Either model enables full detection; both may be set together.
+SLM_DIR_ENV = "LOCAL_SLM_MODEL_DIR"
+SLM_POLICY_ENV = "LOCAL_SLM_POLICY"
 
 router = APIRouter(prefix="/process", tags=["process"])
 
@@ -69,15 +73,20 @@ def _get_detector(rules_only: bool):
             detector = Detector(None)
         else:
             model_dir = os.getenv(MODEL_DIR_ENV)
-            if not model_dir:
+            slm_dir = os.getenv(SLM_DIR_ENV)
+            if not model_dir and not slm_dir:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"full detection requires {MODEL_DIR_ENV} to be set on "
-                        "the server; use rules_only=true otherwise"
+                        f"full detection requires {MODEL_DIR_ENV} or {SLM_DIR_ENV} "
+                        "to be set on the server; use rules_only=true otherwise"
                     ),
                 )
-            detector = Detector(model_dir)
+            if slm_dir:
+                detector = Detector(model_dir or None, slm_dir=slm_dir,
+                                    slm_policy=os.getenv(SLM_POLICY_ENV) or None)
+            else:
+                detector = Detector(model_dir)
 
         _detectors[rules_only] = detector
         return detector

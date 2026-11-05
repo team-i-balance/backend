@@ -54,6 +54,7 @@ def test_process_response_never_contains_original(client):
 
 def test_full_mode_without_model_dir_rejected(client, monkeypatch):
     monkeypatch.delenv("LOCAL_PII_MODEL_DIR", raising=False)
+    monkeypatch.delenv("LOCAL_SLM_MODEL_DIR", raising=False)
     r = client.post("/process", json={"text": "hi", "rules_only": False})
     assert r.status_code == 400
 

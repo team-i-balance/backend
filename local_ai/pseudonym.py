@@ -30,6 +30,10 @@ _TYPE_LABELS = {
     "BUSINESS_NUMBER": "사업자번호",
     "API_KEY": "API키",
     "ACCESS_TOKEN": "토큰",
+    # local_ai/slm: policy-graded spans
+    "SENSITIVE": "민감정보",
+    "CONFIDENTIAL": "기밀",
+    "INTERNAL": "사내정보",
 }
 
 

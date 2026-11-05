@@ -16,7 +16,9 @@ See rules.md section 7.
 from app.schemas import Grade
 
 # Detection type strings produced by local_ai (see local_ai/pseudonym.py labels).
-_CONFIDENTIAL_TYPES = frozenset({"API_KEY", "ACCESS_TOKEN", "PASSWORD"})
+# CONFIDENTIAL / INTERNAL / SENSITIVE come from local_ai/slm: the policy rule's grade
+# (C / S) already chose the type, and SENSITIVE (a person's health, discipline...) is C.
+_CONFIDENTIAL_TYPES = frozenset({"API_KEY", "ACCESS_TOKEN", "PASSWORD", "CONFIDENTIAL", "SENSITIVE"})
 _SENSITIVE_TYPES = frozenset(
     {
         "NAME",
@@ -31,6 +33,7 @@ _SENSITIVE_TYPES = frozenset(
         "USERNAME",
         "IP_ADDRESS",
         "BUSINESS_NUMBER",
+        "INTERNAL",
     }
 )
 

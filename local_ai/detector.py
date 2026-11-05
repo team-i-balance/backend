@@ -83,23 +83,42 @@ _TYPES = {
 }
 
 
+# Types produced by regex/structured rules; they keep their extent when the SLM overlaps them
+# (see Detector._add_slm_spans for the grade-C exception).
+_RULE_TYPES = frozenset({'PHONE', 'EMAIL', 'BUSINESS_NUMBER', 'API_KEY', 'ACCESS_TOKEN'})
+_SECRET_RULE_TYPES = frozenset({'API_KEY', 'ACCESS_TOKEN'})
+_GRADE_C_SLM_TYPES = frozenset({'CONFIDENTIAL', 'SENSITIVE'})
+# Left at SLM span edges after cutting around rule spans.
+_TRIM_CHARS = frozenset(' \t\r\n,.;:/·()[]')
+
+
 class DetectionError(RuntimeError):
     """The detector could not perform the requested complete check."""
 
 
 class Detector:
-    """Rules plus optional AEGIS ONNX model, loaded exclusively from local files.
+    """Rules plus optional AEGIS ONNX model and optional SLM, loaded exclusively from local files.
 
-    ``model_dir=None`` selects rules-only mode; it cannot detect person names or
-    addresses and must not be represented as full PII coverage by callers.
+    ``model_dir=None`` and ``slm_dir=None`` select rules-only mode; it cannot detect person
+    names or addresses and must not be represented as full PII coverage by callers.
+    ``slm_dir`` adds the confidential-policy SLM (local_ai/slm): names, addresses, a person's
+    sensitive facts, and company-confidential spans per ``slm_policy``.
     """
 
-    def __init__(self, model_dir: str | Path | None, *, threads: int = 2):
+    def __init__(self, model_dir: str | Path | None, *, threads: int = 2,
+                 slm_dir: str | Path | None = None, slm_policy: str | Path | None = None):
         if not isinstance(threads, int) or isinstance(threads, bool) or threads < 1:
             raise ValueError('threads must be a positive integer')
-        self.model_enabled = model_dir is not None
+        self.model_enabled = model_dir is not None or slm_dir is not None
         self._tokenizer = self._session = self._np = None
         self._labels: dict[str, str] = {}
+        self._slm = None
+        if slm_dir is not None:
+            try:
+                from .slm import SlmSpanDetector
+                self._slm = SlmSpanDetector(slm_dir, slm_policy)
+            except Exception as exc:
+                raise DetectionError('Failed to load the local SLM') from exc
         if model_dir is None:
             return
         path = Path(model_dir).expanduser()
@@ -158,14 +177,51 @@ class Detector:
         try:
             # Strong structured matches take precedence only when they fully
             # cover a model span. Partial overlaps still require review.
-            model_spans = self._model_detect(text)
-            found.extend(span for span in model_spans if not any(
-                rule['start'] <= span['start'] and span['end'] <= rule['end']
-                and rule['type'] != span['type'] for rule in structured))
+            if self._session is not None:
+                model_spans = self._model_detect(text)
+                found.extend(span for span in model_spans if not any(
+                    rule['start'] <= span['start'] and span['end'] <= rule['end']
+                    and rule['type'] != span['type'] for rule in structured))
+            if self._slm is not None:
+                found = self._add_slm_spans(text, found)
         except Exception as exc:
             # Return no partial result; avoid leaking input through exception text.
             raise DetectionError('Local model inference failed; text was not fully checked') from exc
         return _merge_overlaps(found)
+
+    def _add_slm_spans(self, text: str, found: list[dict]) -> list[dict]:
+        """Add SLM spans without cross-type overlaps (which pseudonymization rejects).
+
+        - Secret rule spans (API key, token) always keep their extent; SLM spans are cut around them.
+        - Other rule spans (phone, email, business number) keep their extent too, unless a
+          grade-C SLM span (CONFIDENTIAL / SENSITIVE) covers them: then the SLM span absorbs
+          them so the policy grade is not lost.
+        - Everything else (AEGIS and SLM spans) is merged by type priority (local_ai.slm.PRIORITY).
+        """
+        from .slm import resolve_overlaps, subtract
+        rules = [s for s in found if s['type'] in _RULE_TYPES]
+        others = [s for s in found if s['type'] not in _RULE_TYPES]
+        secrets = [r for r in rules if r['type'] in _SECRET_RULE_TYPES]
+        slm, absorbed = [], set()
+        for span in self._slm.detect(text):
+            blockers = secrets
+            if span['type'] not in _GRADE_C_SLM_TYPES:
+                blockers = rules
+            else:
+                for i, r in enumerate(rules):
+                    if r['type'] not in _SECRET_RULE_TYPES and r['start'] < span['end'] and span['start'] < r['end']:
+                        absorbed.add(i)
+                        span = {**span, 'start': min(span['start'], r['start']), 'end': max(span['end'], r['end'])}
+            for part in subtract(span, blockers):
+                st, en = part['start'], part['end']
+                while st < en and text[st] in _TRIM_CHARS:
+                    st += 1
+                while en > st and text[en - 1] in _TRIM_CHARS:
+                    en -= 1
+                if en > st:
+                    slm.append({**part, 'start': st, 'end': en})
+        kept_rules = [r for i, r in enumerate(rules) if i not in absorbed]
+        return kept_rules + resolve_overlaps(others + slm)
 
     def _model_detect(self, text: str) -> list[dict]:
         tok, session, np = self._tokenizer, self._session, self._np
