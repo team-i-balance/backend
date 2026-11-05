@@ -132,3 +132,70 @@ def test_cleanup_continues_when_one_session_close_raises(storage):
     store.close()
     assert first.file_bytes == second.file_bytes == b""
     assert session.closed.is_set() and len(store) == 0
+
+
+def test_download_releases_bytes_but_retains_mapping_until_expiry(storage, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(storage.module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    store = storage.module.FileWorkStore(ttl_seconds=10, max_bytes=9)
+    first, session = add(storage, store)
+    deadline, expires_at = first.deadline, first.expires_at
+    payload = store.take_download("one")
+    assert payload == b"protected"
+    assert first.downloaded and first.file_bytes == b""
+    assert store.take_download("one") is None and not session.closed.is_set()
+    assert (first.deadline, first.expires_at) == (deadline, expires_at)
+    add(storage, store, "two")  # Released bytes can hold the next protected copy.
+    now[0] += 10
+    assert store.take_download("one") is None
+    assert session.closed.is_set() and len(store) == 0
+    assert payload == b"protected"  # Expiry cannot mutate an in-flight response.
+
+
+def test_downloaded_mapping_still_counts_toward_item_limit(storage):
+    store = storage.module.FileWorkStore(max_items=1)
+    _, session = add(storage, store)
+    assert store.take_download("one") == b"protected"
+    with pytest.raises(storage.module.FileStoreFull):
+        add(storage, store, "two")
+    assert not session.closed.is_set()
+    store.close()
+    assert session.closed.is_set()
+
+
+def test_discard_after_download_does_not_release_byte_capacity_twice(storage):
+    store = storage.module.FileWorkStore(max_bytes=9)
+    add(storage, store)
+    store.take_download("one")
+    add(storage, store, "two")
+    store.discard("one")
+    with pytest.raises(storage.module.FileStoreFull):
+        add(storage, store, "three")
+    store.discard("two")
+    add(storage, store, "three")
+    store.close()
+
+
+def test_download_and_internal_take_cannot_both_receive_file_bytes(storage):
+    store = storage.module.FileWorkStore()
+    _, session = add(storage, store)
+    barrier = threading.Barrier(2)
+
+    def take():
+        barrier.wait()
+        return store.take("one")
+
+    def download():
+        barrier.wait()
+        return store.take_download("one")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claimed = pool.submit(take)
+        downloaded = pool.submit(download)
+        item, payload = claimed.result(), downloaded.result()
+    assert item is not None
+    assert (payload, item.file_bytes) in ((b"protected", b""), (None, b"protected"))
+    assert not session.closed.is_set()
+    store.close()
+    assert not session.closed.is_set()  # The caller of take owns the session now.
+    item.close()
