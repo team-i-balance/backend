@@ -6,6 +6,8 @@ PC side:
 
 Backend (console) side:
   POST /policy/publish         sign a payload into a bundle, version+1, store
+  GET  /policy/draft           saved draft or latest published payload + ETag
+  PUT  /policy/draft           save a full draft with If-Match concurrency control
   GET  /policy/latest          latest bundle (ETag = bundle sha256; 304 aware)
   GET  /policy/history         published bundles, newest first
   GET  /policy/{version}       a specific bundle (audit / replay)
@@ -21,15 +23,17 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from app.policy import (
     ActivePolicy,
     DEMO_KEY_ID,
-    make_model_bundle,
+    SigningKeyError,
     store,
 )
+from app.policy_draft import DraftError
+from app.policy_draft_schemas import DraftIn, DraftOut
 from app.schemas import (
     AckIn,
     AckOut,
@@ -91,9 +95,59 @@ def current():
 
 
 # --- Backend / console side -------------------------------------------------
+def get_policy_editor() -> str:
+    """Replace with the verified security-team account when authentication (#10) lands."""
+    return "unauthenticated"
+
+
+def _draft_error(exc: DraftError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code, detail=exc.detail, headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/draft", response_model=DraftOut)
+def get_draft(response: Response):
+    state = store.draft()
+    response.headers["ETag"] = state["etag"]
+    response.headers["Cache-Control"] = "no-store"
+    return state
+
+
+@router.put("/draft", response_model=DraftOut)
+def put_draft(
+    body: DraftIn,
+    response: Response,
+    if_match: Optional[str] = Header(default=None, max_length=128),
+    editor: str = Depends(get_policy_editor),
+):
+    try:
+        state = store.save_draft(
+            body.payload, [change.model_dump() for change in body.changes],
+            if_match=if_match, editor=editor,
+        )
+    except DraftError as exc:
+        raise _draft_error(exc) from exc
+    response.headers["ETag"] = state["etag"]
+    response.headers["Cache-Control"] = "no-store"
+    return state
+
+
 @router.post("/publish", response_model=PublishOut)
-def publish(body: PublishIn):
-    stored = store.publish(body.payload)
+def publish(
+    response: Response,
+    body: Optional[PublishIn] = None,
+    if_match: Optional[str] = Header(default=None, max_length=128),
+):
+    try:
+        stored = store.publish(body.payload if body else None, if_match=if_match)
+    except DraftError as exc:
+        raise _draft_error(exc) from exc
+    except SigningKeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="policy signing key unavailable; restore the original key files",
+        ) from exc
+    response.headers["Cache-Control"] = "no-store"
     return PublishOut(
         version=stored.version, keyid=DEMO_KEY_ID, bundle_sha256=stored.sha256
     )
@@ -153,8 +207,12 @@ def model_publish(body: ModelPublishIn):
         "sha256": body.sha256,
         "url": body.url,
     }
-    bundle = make_model_bundle(manifest)
-    store.set_model_manifest(bundle)
+    try:
+        store.publish_model(manifest)
+    except SigningKeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="policy signing key unavailable; restore the original key files",
+        ) from exc
     return {"published": True, "name": body.name, "version": body.version}
 
 

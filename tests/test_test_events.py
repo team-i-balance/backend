@@ -8,6 +8,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
+
 # event_log as it existed before the is_test column was added.
 _OLD_SCHEMA = """
 CREATE TABLE event_log (
@@ -110,6 +112,7 @@ def test_migrated_db_serves_api(tmp_path, monkeypatch):
     monkeypatch.setenv("LOG_KEYS_DIR", str(tmp_path / "keys"))
     monkeypatch.setenv("LOG_EXPORT_DIR", str(tmp_path / "exports"))
     monkeypatch.setenv("POLICY_KEYS_DIR", str(tmp_path / "policy_keys"))
+    monkeypatch.setenv("POLICY_DB_PATH", str(tmp_path / "policy.db"))
     for name in list(sys.modules):
         if name == "main" or name == "app" or name.startswith("app."):
             del sys.modules[name]
@@ -236,3 +239,84 @@ def test_test_events_never_become_cases(client):
     assert [c["event"]["id"] for c in items] == [real["id"]]
     assert items[0]["event"]["test"] is False
     assert "is_test" not in items[0]["event"]
+
+
+@pytest.mark.parametrize("include_test", [False, True])
+def test_period_stats_apply_test_filter_to_all_aggregates(client, include_test):
+    from app.db import get_conn
+
+    # Boundary records use different offsets; out-of-window records of both
+    # kinds must stay excluded even when test events are requested.
+    records = [
+        ("2026-06-01T09:00:00+09:00", _event(grade="public_O", action="send_as_is")),
+        ("2026-06-02T00:00:00Z", _event(action="revert_original", reverted=True,
+                                       reason="business_need", test=True)),
+        ("2026-05-31T23:59:59.999999Z", _event()),
+        ("2026-06-02T00:00:00.000001Z", _event(test=True)),
+    ]
+    saved = []
+    for at, body in records:
+        response = client.post("/logs/events", json=body)
+        assert response.status_code == 201
+        saved.append(response.json())
+        with get_conn() as conn:
+            conn.execute("UPDATE event_log SET created_at = ? WHERE id = ?", (at, saved[-1]["id"]))
+
+    params = {"start": "2026-06-01T00:00:00Z", "end": "2026-06-02T00:00:00Z",
+              "include_test": str(include_test).lower()}
+    response = client.get("/logs/stats", params=params)
+    assert response.status_code == 200
+    expected = saved[:2] if include_test else saved[:1]
+    result = response.json()
+    assert result["total"] == len(expected)
+    assert result["by_action"] == {
+        "send_as_is": 1, "send_transformed": 0, "cancel": 0,
+        "revert_original": int(include_test),
+    }
+    assert result["acceptance_rate"] == (0.5 if include_test else 1.0)
+    assert result["revert_rate"] == (0.5 if include_test else 0.0)
+    assert result["evasion_suspect"] == int(include_test)
+    assert result["by_grade"] == ({"public_O": 1, "sensitive_S": 1} if include_test else {"public_O": 1})
+    expected_queues = {}
+    for item in expected:
+        expected_queues[item["queue"]] = expected_queues.get(item["queue"], 0) + 1
+    assert result["by_queue"] == expected_queues
+    listed = client.get("/logs/events", params=params)
+    assert listed.status_code == 200
+    assert [row["id"] for row in listed.json()] == [row["id"] for row in reversed(expected)]
+
+
+@pytest.mark.parametrize("include_test", [False, True])
+def test_test_filter_combines_with_cursor_period_grade_and_queue(client, include_test):
+    from app.db import get_conn
+
+    matches = []
+    for index in range(7):
+        body = _event(test=index % 2 == 0)
+        if index == 1:
+            body.update(grade="public_O")
+        elif index == 3:
+            body.update(action="cancel", reason="false_positive")
+        response = client.post("/logs/events", json=body)
+        assert response.status_code == 201
+        row = response.json()
+        at = "2025-01-01T00:00:00Z" if index == 2 else "2026-06-01T12:00:00Z"
+        with get_conn() as conn:
+            conn.execute("UPDATE event_log SET created_at = ? WHERE id = ?", (at, row["id"]))
+        if index in (0, 4, 5, 6) and (include_test or not body["test"]):
+            matches.append(row["id"])
+
+    params = {"start": "2026-06-01", "end": "2026-06-02", "grade": "sensitive_S",
+              "queue": "pre_warning", "include_test": str(include_test).lower(), "limit": 2}
+    seen = []
+    for _ in range(5):
+        response = client.get("/logs/events", params=params)
+        assert response.status_code == 200
+        page = response.json()
+        if not page:
+            break
+        seen.extend(row["id"] for row in page)
+        params["cursor"] = page[-1]["id"]
+    else:
+        pytest.fail("cursor never reached the end")
+    assert seen == list(reversed(matches))

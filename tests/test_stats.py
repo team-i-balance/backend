@@ -16,6 +16,7 @@ def test_stats_empty(client):
         "evasion_suspect": 0,
         "by_queue": {},
         "by_grade": {},
+        "by_action": {"send_as_is": 0, "send_transformed": 0, "cancel": 0, "revert_original": 0},
     }
 
 
@@ -46,6 +47,7 @@ def test_stats_computed_values(client):
     assert sum(s["by_grade"].values()) == 5
     assert s["by_grade"]["public_O"] == 1
     assert s["by_grade"]["sensitive_S"] == 4
+    assert s["by_action"] == {"send_as_is": 1, "send_transformed": 1, "cancel": 1, "revert_original": 2}
 
 
 def test_acceptance_rate_all_accepted(client):

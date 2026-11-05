@@ -6,6 +6,12 @@ After=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/backend
+# Keep policy state and the SAME signing identity across checkout replacement.
+# Existing installations: migrate keys before installing this unit (docs/policy-persistence.md).
+StateDirectory=ibalance
+StateDirectoryMode=0700
+Environment=POLICY_DB_PATH=/var/lib/ibalance/policy.db
+Environment=POLICY_KEYS_DIR=/var/lib/ibalance/keys
 Environment=ALLOWED_ORIGINS=https://frontend-beta-plum-35.vercel.app
 # No outbound connections: onnxruntime telemetry off, Hugging Face offline (local model folders only).
 Environment=ORT_DISABLE_TELEMETRY=1

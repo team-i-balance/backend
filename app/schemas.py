@@ -104,6 +104,7 @@ class Stats(BaseModel):
     evasion_suspect: int
     by_queue: dict[str, int]
     by_grade: dict[str, int]
+    by_action: dict[str, int]
 
 
 class ExportResult(BaseModel):
