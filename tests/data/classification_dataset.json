@@ -11,8 +11,11 @@
     {"id": "bn-03", "note": "업무상 필요 + 변환전송", "event": {"grade": "sensitive_S", "action": "send_transformed", "reason": "business_need"}, "expected_queue": "violation_candidate"},
     {"id": "bn-04", "note": "업무상 필요 + 그대로전송", "event": {"grade": "sensitive_S", "action": "send_as_is", "reason": "business_need"}, "expected_queue": "violation_candidate"},
 
-    {"id": "rv-01", "note": "취소 + 확실(high), 사유없음 = 실제위반", "event": {"grade": "confidential_C", "action": "cancel", "detection_confidence": "high", "detected_types": ["secret_key"], "detected_count": 1}, "expected_queue": "real_violation"},
-    {"id": "rv-02", "note": "취소 + 확실(high), 민감", "event": {"grade": "sensitive_S", "action": "cancel", "detection_confidence": "high", "detected_types": ["rrn", "card"], "detected_count": 2}, "expected_queue": "real_violation"},
+    {"id": "rv-01", "note": "기밀 + 원문 그대로 전송 + 확실(high) = 실제위반", "event": {"grade": "confidential_C", "action": "send_as_is", "detection_confidence": "high", "detected_types": ["secret_key"], "detected_count": 1}, "expected_queue": "real_violation"},
+    {"id": "rv-02", "note": "민감 + 사유 없는 되돌림(원문 전송) + 확실(high) = 실제위반", "event": {"grade": "sensitive_S", "action": "revert_original", "detection_confidence": "high", "detected_types": ["rrn", "card"], "detected_count": 2}, "expected_queue": "real_violation"},
+    {"id": "rv-03", "note": "취소 + 확실(high)은 전송이 없어 위반 아님 (이슈 #20)", "event": {"grade": "confidential_C", "action": "cancel", "detection_confidence": "high", "detected_types": ["API_KEY"], "detected_count": 1}, "expected_queue": "pre_warning"},
+    {"id": "rv-04", "note": "공개 등급 원문 전송 + high는 위반 아님", "event": {"grade": "public_O", "action": "send_as_is", "detection_confidence": "high"}, "expected_queue": "pre_warning"},
+    {"id": "rv-05", "note": "민감 + 원문 전송이지만 규칙만 검사(low)면 사전 경고", "event": {"grade": "sensitive_S", "action": "send_as_is", "detection_confidence": "low", "detected_types": ["PHONE"], "detected_count": 1}, "expected_queue": "pre_warning"},
 
     {"id": "pw-01", "note": "변환전송, 사유없음, medium", "event": {"grade": "sensitive_S", "action": "send_transformed", "detection_confidence": "medium", "detected_types": ["email"], "detected_count": 3}, "expected_queue": "pre_warning"},
     {"id": "pw-02", "note": "취소지만 확실치 않음(low)", "event": {"grade": "sensitive_S", "action": "cancel", "detection_confidence": "low"}, "expected_queue": "pre_warning"},

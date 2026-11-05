@@ -32,14 +32,52 @@ CREATE TABLE IF NOT EXISTS event_log (
 CREATE INDEX IF NOT EXISTS idx_event_created_at ON event_log (created_at);
 CREATE INDEX IF NOT EXISTS idx_event_queue      ON event_log (queue);
 CREATE INDEX IF NOT EXISTS idx_event_grade      ON event_log (grade);
+
+-- Review history is the source of case state: no history / reopen = open,
+-- latest close = closed. Existing events therefore need no backfill.
+CREATE TABLE IF NOT EXISTS case_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id    INTEGER NOT NULL REFERENCES event_log(id),
+    operation   TEXT NOT NULL CHECK (operation IN ('close', 'reopen')),
+    created_at  TEXT NOT NULL,
+    reviewer    TEXT NOT NULL,
+    conclusion  TEXT CHECK (conclusion IN ('violation', 'legit', 'fp')),
+    cause       TEXT CHECK (cause IN ('fit', 'care', 'intent')),
+    memo        TEXT,
+    rule        TEXT,
+    CHECK (
+        (operation = 'close' AND conclusion IS NOT NULL AND memo IS NOT NULL)
+        OR (operation = 'reopen' AND conclusion IS NULL AND cause IS NULL
+            AND memo IS NULL AND rule IS NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_case_history_event ON case_history (event_id, id);
 """
 
 
 def init_db() -> None:
-    """Create the data dir, DB file, and tables if missing."""
+    """Create tables and add reason tracking to existing event databases."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        # Serialize schema inspection + ALTER across concurrent server starts.
+        # reason_text is also used by event-context metadata (issue #21).
+        conn.execute("BEGIN IMMEDIATE")
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(event_log)")}
+        for name in ("reason_requested_at", "reason_at", "reason_text"):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE event_log ADD COLUMN {name} TEXT")
+        # Older rows have no independent request/submission timestamps. Use
+        # event creation time for their initial waiting state / initial reason.
+        conn.execute("""
+            UPDATE event_log SET reason_requested_at = created_at
+            WHERE grade = 'sensitive_S' AND action = 'send_as_is'
+              AND reason IS NULL AND reason_requested_at IS NULL
+        """)
+        conn.execute("""
+            UPDATE event_log SET reason_at = created_at
+            WHERE reason IS NOT NULL AND reason_at IS NULL
+        """)
 
 
 @contextmanager

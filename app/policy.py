@@ -346,7 +346,10 @@ class StoredBundle:
     version: int
     envelope: dict
     sha256: str
-    stored_at: str
+    # UTC ISO time the server stored this bundle. Optional so a bundle stored
+    # without one (older/imported data) is reported as null, not invented.
+    stored_at: Optional[str]
+    rule_count: int = 0
 
 
 class PolicyStore:
@@ -361,7 +364,9 @@ class PolicyStore:
         self._active: Optional[ActivePolicy] = None
         self._history: dict[int, StoredBundle] = {}      # version -> bundle
         self._latest_version: int = 0                    # for publish version+1
-        self._acks: dict[str, dict] = {}                 # device_id -> last ack
+        self._acks: dict[str, dict] = {}                 # device_id -> last ack (any version)
+        # version -> device_id -> that device's last ack for that version
+        self._acks_by_version: dict[int, dict[str, dict]] = {}
         self._model_manifest: Optional[dict] = None      # latest model manifest
         self._lock = threading.Lock()
 
@@ -418,11 +423,13 @@ class PolicyStore:
             version = self._latest_version + 1
             payload = {**payload, "version": version}
             envelope = signer(payload)
+            rules = payload.get("rules")
             stored = StoredBundle(
                 version=version,
                 envelope=envelope,
                 sha256=bundle_hash(envelope),
                 stored_at=datetime.now(timezone.utc).isoformat(),
+                rule_count=len(rules) if isinstance(rules, list) else 0,
             )
             self._history[version] = stored
             self._latest_version = version
@@ -438,27 +445,48 @@ class PolicyStore:
         with self._lock:
             return self._history.get(version)
 
+    def history(self) -> list[StoredBundle]:
+        """All stored bundles, newest version first."""
+        with self._lock:
+            return [self._history[v] for v in sorted(self._history, reverse=True)]
+
     # --- Backend-side: ack tracking -----------------------------------------
     def record_ack(self, device_id: str, version: int, status: str, reason: Optional[str]) -> None:
+        entry = {
+            "device_id": device_id,
+            "version": version,
+            "status": status,
+            "reason": reason,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
         with self._lock:
-            self._acks[device_id] = {
-                "device_id": device_id,
-                "version": version,
-                "status": status,
-                "reason": reason,
-                "at": datetime.now(timezone.utc).isoformat(),
-            }
+            self._acks[device_id] = entry
+            # A device re-sending for the same version overwrites its earlier ack.
+            self._acks_by_version.setdefault(version, {})[device_id] = entry
 
-    def ack_summary(self) -> dict:
+    def has_acks(self, version: int) -> bool:
         with self._lock:
-            applied = sum(1 for a in self._acks.values() if a["status"] == "applied")
-            rejected = sum(1 for a in self._acks.values() if a["status"] == "rejected")
+            return bool(self._acks_by_version.get(version))
+
+    def ack_summary(self, version: Optional[int] = None) -> dict:
+        """Apply/reject counts.
+
+        version=None: each device's last ack, whatever version it was for
+        (legacy console view). version=N: each device's last ack for N only.
+        """
+        with self._lock:
+            if version is None:
+                acks = list(self._acks.values())
+            else:
+                acks = list(self._acks_by_version.get(version, {}).values())
+            applied = sum(1 for a in acks if a["status"] == "applied")
+            rejected = sum(1 for a in acks if a["status"] == "rejected")
             reasons: dict[str, int] = {}
-            for a in self._acks.values():
+            for a in acks:
                 if a["status"] == "rejected" and a["reason"]:
                     reasons[a["reason"]] = reasons.get(a["reason"], 0) + 1
             return {
-                "devices": len(self._acks),
+                "devices": len(acks),
                 "applied": applied,
                 "rejected": rejected,
                 "reject_reasons": reasons,
@@ -479,6 +507,7 @@ class PolicyStore:
             self._history.clear()
             self._latest_version = 0
             self._acks.clear()
+            self._acks_by_version.clear()
             self._model_manifest = None
 
 

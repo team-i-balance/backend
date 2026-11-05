@@ -5,7 +5,7 @@ Enum values mirror app/rules.md (the temporary in-house classification rules).
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Grade(str, Enum):
@@ -67,6 +67,9 @@ class EventOut(BaseModel):
     grade: str
     action: str
     reason: Optional[str]
+    reason_text: Optional[str] = None
+    reason_requested_at: Optional[str] = None
+    reason_at: Optional[str] = None
     detection_confidence: Optional[str]
     detected_types: list[str]
     detected_count: int
@@ -74,6 +77,20 @@ class EventOut(BaseModel):
     restored: bool
     content_hash: Optional[str]
     queue: str
+
+
+class EventReasonIn(BaseModel):
+    """Employee explanation submitted after a sensitive raw send."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Reason
+    text: str = Field(min_length=1, max_length=500)
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class Stats(BaseModel):
