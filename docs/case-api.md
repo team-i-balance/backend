@@ -115,7 +115,9 @@ Content-Type: application/json
 | `rule` | 재발 방지 규칙 설명, 앞뒤 공백 제거 후 1~2,000자 / 생략 또는 `null` |
 
 `rule`은 판단 당시 설명을 저장하는 필드입니다. 정책 초안 등록·서명·배포를 수행하지 않습니다.
-정책 반영은 기존 정책 API로 별도 처리합니다.
+정책 반영은 [정책 초안 API](policy-draft-api.md)로 별도 처리합니다. 콘솔은 구조화된 규칙을
+`payload.rules`에, 변경 설명과 `src: INC-…`를 `changes`에 넣어 `PUT /policy/draft`로 저장하세요.
+종결과 초안 저장은 별도 요청이므로 각각의 성공 응답을 확인해야 합니다.
 
 ```http
 POST /cases/INC-42/reopen
