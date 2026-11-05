@@ -8,7 +8,7 @@ Backend (console) side:
   POST /policy/publish         sign a payload into a bundle, version+1, store
   GET  /policy/draft           saved draft or latest published payload + ETag
   PUT  /policy/draft           save a full draft with If-Match concurrency control
-  GET  /policy/latest          latest bundle (ETag = bundle sha256; 304 aware)
+  GET  /policy/latest          latest bundle (ETag = "bundle sha256"; 304 aware)
   GET  /policy/history         published bundles, newest first
   GET  /policy/{version}       a specific bundle (audit / replay)
   POST /policy/ack             record a PC agent's apply/reject result
@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from app.auth import require_api, require_security
+from app.etag import if_none_match_hits, quote_etag
 from app.policy import (
     ActivePolicy,
     DEMO_KEY_ID,
@@ -159,10 +160,12 @@ def latest(response: Response, if_none_match: str | None = Header(default=None))
     stored = store.latest()
     if stored is None:
         raise HTTPException(status_code=404, detail="no policy published yet")
-    # ETag = bundle sha256. If the client already has it, return 304.
-    if if_none_match is not None and if_none_match == stored.sha256:
-        return Response(status_code=304, headers={"ETag": stored.sha256})
-    response.headers["ETag"] = stored.sha256
+    # ETag = quoted bundle sha256 ("sha256:<hex>"). If the client already has
+    # it (quoted or legacy unquoted, W/, list, or *), return 304.
+    etag = quote_etag(stored.sha256)
+    if if_none_match_hits(if_none_match, stored.sha256):
+        return Response(status_code=304, headers={"ETag": etag})
+    response.headers["ETag"] = etag
     return stored.envelope
 
 
