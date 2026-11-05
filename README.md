@@ -4,32 +4,42 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 
 ## 엔드포인트
 
-| Method | Path      | 설명                          |
-| ------ | --------- | ----------------------------- |
-| GET    | `/`       | 서비스 정보 + 상태            |
-| GET    | `/health` | `{"status": "ok"}` 헬스체크   |
-| GET    | `/logs/stats` | 기간별 통계 및 행동·등급·큐별 건수 |
-| GET    | `/logs/events` | 기간·등급·큐 필터와 커서 페이지 넘김 |
-| POST   | `/events/{event_id}/reason` | 민감 원문 전송 후 직원 사유 제출·저장 |
-| POST   | `/files/sanitize` | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
-| GET    | `/files/{work_id}/download` | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
-| POST   | `/files/{work_id}/restore` | 파일 매핑으로 AI 답변 복원; 만료 전까지 여러 번 |
-| GET    | `/cases` | 필수·선택 검토 및 종결 건 목록, 커서 페이지 이동 |
-| GET    | `/cases/{id}` | 이벤트 메타데이터와 판단·처리 이력 |
-| POST   | `/cases/{id}/close` | 위반·예외 인정·오탐으로 종결 |
-| POST   | `/cases/{id}/reopen` | 이전 이력을 유지하고 다시 열기 |
-| POST   | `/cases/close-bulk` | 선택 검토 건을 일괄 ‘문제 없음’으로 종결 |
-| GET    | `/policy/draft` | 저장된 정책 초안과 변경 목록, ETag 조회 |
-| PUT    | `/policy/draft` | If-Match로 동시 수정을 확인하고 초안 전체 저장 |
-| POST   | `/policy/publish` | 저장된 초안 또는 직접 전달한 payload 서명·발행 |
+인증 열: `api` = api 또는 security 토큰, `security` = security 토큰만, `없음` = 토큰 불필요. 자세한 규칙은 [app/rules.md §11](app/rules.md)을 참고하세요.
+
+| Method | Path | 인증 | 설명 |
+| ------ | ---- | ---- | ---- |
+| GET    | `/` | 없음 | 서비스 정보 + 상태 |
+| GET    | `/health` | 없음 | `{"status": "ok"}` 헬스체크 |
+| POST   | `/auth/dev-token` | 없음 | 즉석 Bearer 토큰 발급(`{"scope": "api"\|"security"}`); `DISABLE_DEV_TOKEN=1`이면 403 |
+| POST   | `/logs/events` | api | 런타임 이벤트 1건 저장·큐 분류(`"test": true`면 시험 이벤트) |
+| GET    | `/logs/events` | security | 기간·등급·큐 필터와 커서 페이지 넘김 |
+| GET    | `/logs/stats` | security | 기간별 통계 및 행동·등급·큐별 건수 |
+| POST   | `/logs/export` | security | 보안팀 공개키로 암호화한 로그 파일 생성. 큐·기간(`start`/`end`) 필터, `limit`(기본 1,000·최대 10,000), `cursor`/`next_cursor` 페이지 넘김 |
+| POST   | `/events/{event_id}/reason` | api | 민감 원문 전송 후 직원 사유 제출·저장 |
+| POST   | `/files/sanitize` | api | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
+| GET    | `/files/{work_id}/download` | api | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
+| POST   | `/files/{work_id}/restore` | api | 파일 매핑으로 AI 답변 복원; 만료 전까지 여러 번 |
+| GET    | `/cases` | security | 필수·선택 검토 및 종결 건 목록, 커서 페이지 이동 |
+| GET    | `/cases/{id}` | security | 이벤트 메타데이터와 판단·처리 이력 |
+| POST   | `/cases/{id}/close` | security | 위반·예외 인정·오탐으로 종결 |
+| POST   | `/cases/{id}/reopen` | security | 이전 이력을 유지하고 다시 열기 |
+| POST   | `/cases/close-bulk` | security | 선택 검토 건을 일괄 ‘문제 없음’으로 종결 |
+| GET    | `/policy/latest` | api | 최신 서명 번들. `ETag: "sha256:…"`, `If-None-Match`가 맞으면 304 |
+| GET    | `/policy/history` | security | 발행된 번들 목록(최신순): 버전·`sha256`·저장 시각·규칙 수 |
+| GET    | `/policy/acks` | security | PC 적용/거부 집계(`?version=N`으로 한 버전만) |
+| GET    | `/policy/{version}/acks` | security | 한 버전의 기기 수·applied·rejected·거부 사유별 건수 |
+| GET    | `/policy/draft` | security | 저장된 정책 초안과 변경 목록, ETag 조회 |
+| PUT    | `/policy/draft` | security | If-Match로 동시 수정을 확인하고 초안 전체 저장 |
+| POST   | `/policy/publish` | security | 저장된 초안 또는 직접 전달한 payload 서명·발행 |
 
 파일 API의 요청·응답, 오류 코드, 내부 AI 전송 연결 방법은 [파일 API 문서](docs/file-api.md)를 참고하세요.
 검토 대상 기준, 요청·응답과 콘솔 연결 방법은 [보안팀 검토 API 문서](docs/case-api.md)를 참고하세요.
-검토 상태는 기존 `LOG_DB_PATH`에 영구 저장합니다. 인증 연결 전 처리자는 `unauthenticated`로 기록합니다.
+검토 상태는 기존 `LOG_DB_PATH`에 영구 저장합니다. 처리자는 검증된 security 토큰의 라벨로 기록합니다(#45 이전 이력은 `unauthenticated`).
 기존 텍스트·로그 API를 포함한 전체 명세는 서버의 `/docs`에서 확인할 수 있습니다.
 최근 7일 집계와 1,000건 이상의 목록 조회는 [로그 통계·페이지 넘김 문서](docs/log-stats-api.md)를 참고하세요.
 원문 전송 후 사유 제출 흐름, 추가 응답 필드와 재시도 규칙은 [직원 사유 API 문서](docs/event-reason-api.md)를 참고하세요.
 정책 초안 저장·충돌 처리·발행과 사건 규칙 연결 방법은 [정책 초안 API 문서](docs/policy-draft-api.md)를 참고하세요.
+서버가 배포 정책의 어떤 필드(켬/끔·등급·변환 방식·규칙·고유 단어·탐지 제외)를 어떻게 적용하는지는 [정책 적용 문서](docs/policy-apply.md)를 참고하세요.
 
 ### 로그 API 시험 이벤트
 
@@ -38,6 +48,7 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 - `GET /logs/events`, `GET /logs/queues/{name}`, `GET /logs/stats`, `POST /logs/export`
 - 시험 이벤트까지 보려면 쿼리에 `include_test=true`를 붙입니다. 예: `GET /logs/stats?include_test=true`
 - 응답의 각 이벤트에는 `test` 필드(true/false)가 있습니다.
+- 반면 `/cases*`는 시험 이벤트를 **항상** 제외합니다. `include_test` 쿼리가 없고, 시험 이벤트는 검토 건이 되지 않습니다.
 
 `test` 필드가 생기기 전에 들어간 `request_id`가 `console-test-`로 시작하는 이벤트는 서버 시작 때 마이그레이션이 시험 이벤트로 표시합니다. 데이터는 지우지 않습니다.
 
@@ -157,6 +168,8 @@ LibreOffice Calc의 기본 계산 설정과 빈 머리글·바닥글 및 빈 사
 - `POLICY_DB_PATH`: 정책 초안·번들·적용 상태·PC 기록·모델을 저장할 SQLite 경로. 기본값 `data/policy.db`.
 - `POLICY_KEYS_DIR`: 정책 서명 개인키와 신뢰 공개키 디렉터리. 기본값 `keys/`.
   운영에서는 DB와 기존 키를 모두 영구 경로에 보관하세요. [저장·이전 안내](docs/policy-persistence.md).
+- `POLICY_VALUE_HASH_KEY`: 정책 `dict`·`exclude`의 `hmac:` 항목(이벤트 `value_hash`)을 비교할 조직 키.
+  PC 에이전트가 `value_hash`를 만들 때 쓰는 키와 같아야 합니다. 없으면 `hmac:` 항목은 무시하고 경고만 남깁니다.
 - `ALLOWED_ORIGINS`: CORS 허용 오리진(콤마 구분). 기본값 `*`.
   배포 시 프론트엔드 주소로 지정하세요. 예: `https://your-app.vercel.app`
 

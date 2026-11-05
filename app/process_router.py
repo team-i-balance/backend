@@ -80,12 +80,14 @@ def process_text(body: ProcessIn):
     from app.policy_apply import apply_policy_to_detector
 
     detector = _get_detector(body.rules_only)
-    # Apply the active policy (types, rules, dict, exclude) to the shared detector.
-    # A policy that fails to apply leaves the previous one in effect (#47).
+    # Read the active policy once and compile it (cached while unchanged). The
+    # request detects with that snapshot only, so a concurrent deploy cannot mix
+    # policies, and the logged version is the one used (#47, #49). A policy that
+    # fails to apply leaves the previous one in effect; ``applied.version`` says which.
     applied = apply_policy_to_detector(detector, policy_store.current())
     if body.file_work_id is None:
         # The pseudonym mapping is per-work; the detector is shared.
-        session = LocalSession(detector)
+        session = LocalSession(applied.bind(detector))
     else:
         session = file_store.lend(body.file_work_id)
         if session is None:
@@ -122,6 +124,8 @@ def process_text(body: ProcessIn):
         grade=grade.value,
         detection_confidence=confidence.value,
         remaining_count=len(result.remaining),
+        # The version this detection used (issues #47, #49).
+        policy_version=applied.version,
     )
 
     return ProcessOut(
@@ -152,6 +156,7 @@ def decide(body: DecideIn):
             detection_confidence=Confidence(item.detection_confidence),
             action=body.action,
             reason=body.reason,
+            policy_version=item.policy_version,
         )
         saved = crud.insert_event(event_in)
 

@@ -253,28 +253,41 @@ class Detector:
         self._disabled_types = frozenset(disabled_types or ())
         self._span_policy = span_policy
 
-    def _apply_policy(self, spans: list[dict]) -> list[dict]:
-        if not self._disabled_types:
+    def _apply_policy(self, spans: list[dict], disabled=None) -> list[dict]:
+        disabled = self._disabled_types if disabled is None else disabled
+        if not disabled:
             return spans
-        return [s for s in spans if s['type'] not in self._disabled_types]
+        return [s for s in spans if s['type'] not in disabled]
 
-    def detect(self, text: str) -> list[dict]:
+    def detect(self, text: str, policy=None) -> list[dict]:
+        """Spans for ``text``.
+
+        ``policy`` (app/policy_apply.ServerPolicy, or anything with ``disabled_types``,
+        ``slm_view`` and ``has_span_policy`` that is callable as ``policy(text, spans)``)
+        is used for this call only, instead of the state from set_policy, so requests
+        sharing this detector never mix policies (#47).
+        """
         if not isinstance(text, str):
             raise TypeError('text must be a string')
-        found = self._detect_raw(text)
+        if policy is None:
+            disabled, span_policy, view = self._disabled_types, self._span_policy, None
+        else:
+            disabled = frozenset(policy.disabled_types)
+            span_policy = policy if policy.has_span_policy else None
+            view = policy.slm_view
+        found = self._detect_raw(text, disabled, view)
         normalized, offsets = normalize_for_detection(text)
         if normalized != text:
             try:
-                normalized_spans = self._detect_raw(normalized)
+                normalized_spans = self._detect_raw(normalized, disabled, view)
                 found = self._apply_policy(
-                    _merge_overlaps(found + restore_detection_offsets(normalized_spans, offsets))
+                    _merge_overlaps(found + restore_detection_offsets(normalized_spans, offsets)), disabled
                 )
             except Exception as exc:
                 raise DetectionError('Normalized text detection failed; text was not fully checked') from exc
-        span_policy = self._span_policy
         return span_policy(text, found) if span_policy is not None else found
 
-    def _detect_raw(self, text: str) -> list[dict]:
+    def _detect_raw(self, text: str, disabled=None, view=None) -> list[dict]:
         found = [{'start': m.start(), 'end': m.end(), 'type': kind}
                  for kind, pattern in (('PHONE', _PHONE), ('EMAIL', _EMAIL))
                  for m in pattern.finditer(text)]
@@ -282,7 +295,7 @@ class Detector:
         # A password value beats phone/email/number spans inside it (kr_rules.password_first).
         found = password_first(text, found + structured)
         if not self.model_enabled or not text:
-            return self._apply_policy(_merge_overlaps(found))
+            return self._apply_policy(_merge_overlaps(found), disabled)
         try:
             # Strong structured matches take precedence only when they fully
             # cover a model span. Partial overlaps still require review.
@@ -292,13 +305,13 @@ class Detector:
                     rule['start'] <= span['start'] and span['end'] <= rule['end']
                     and rule['type'] != span['type'] for rule in structured))
             if self._slm is not None:
-                found = self._add_slm_spans(text, found)
+                found = self._add_slm_spans(text, found, view)
         except Exception as exc:
             # Return no partial result; avoid leaking input through exception text.
             raise DetectionError('Local model inference failed; text was not fully checked') from exc
-        return self._apply_policy(_merge_overlaps(found))
+        return self._apply_policy(_merge_overlaps(found), disabled)
 
-    def _add_slm_spans(self, text: str, found: list[dict]) -> list[dict]:
+    def _add_slm_spans(self, text: str, found: list[dict], view=None) -> list[dict]:
         """Add SLM spans without cross-type overlaps (which pseudonymization rejects).
 
         - Rule-engine spans (keys, passwords, phone, email, resident/card/account numbers, IP,
@@ -316,7 +329,7 @@ class Detector:
         # Pseudonym placeholders ([주소_1]) are not data; the SLM tends to re-flag them on re-inspection.
         placeholders = [{'start': m.start(), 'end': m.end()} for m in _PLACEHOLDER.finditer(text)]
         slm = []
-        for span in self._slm.detect(text):
+        for span in (self._slm.detect(text) if view is None else self._slm.detect(text, view=view)):
             # A span touching a placeholder is the SLM re-reading already-masked content.
             if any(p['start'] < span['end'] and span['start'] < p['end'] for p in placeholders):
                 continue

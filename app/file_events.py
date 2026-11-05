@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+from typing import Optional
 
 from app import crud
 from app.ingest import coverage_to_confidence
@@ -27,9 +28,12 @@ class FileEvent:
     detected_count: int
     detection_confidence: Confidence
     content_hash: str  # SHA-256 of the uploaded file bytes
+    # Policy version applied to the detector when the file was checked (#49).
+    policy_version: Optional[int] = None
 
     @classmethod
-    def of(cls, *, work_id: str, grade: Grade, findings, data: bytes, model_enabled: bool):
+    def of(cls, *, work_id: str, grade: Grade, findings, data: bytes, model_enabled: bool,
+           policy_version: Optional[int] = None):
         return cls(
             work_id=work_id,
             grade=grade,
@@ -39,6 +43,7 @@ class FileEvent:
                 "model_and_rules" if model_enabled else "rules_only_incomplete"
             ),
             content_hash=hashlib.sha256(data).hexdigest(),
+            policy_version=policy_version,
         )
 
 
@@ -53,4 +58,5 @@ def record(event: FileEvent, action: Action) -> dict:
         detected_count=event.detected_count,
         content_hash=event.content_hash,
         source=Source.file,
+        policy_version=event.policy_version,
     ))

@@ -104,6 +104,12 @@ class EventIn(BaseModel):
     # excluded from list/queue/stats/export unless include_test=true.
     test: bool = False
     source: Source = Source.text
+    # Policy version the client applied to this input (/policy/current's
+    # version), issue #49. Server-built events (/process/decide, file events)
+    # set the server's active version. Null = unknown / no active policy.
+    # Any integer: the policy subsystem can activate any integer version, and
+    # a server-built event must never fail validation after work is consumed.
+    policy_version: Optional[int] = None
 
     # --- Context fields (issue #21) ------------------------------------------
     # Identifiers for the submitting employee and channel. All optional to
@@ -165,6 +171,7 @@ class EventOut(BaseModel):
     items: list[EventItem] = Field(default_factory=list)
     test: bool = False
     source: str = Source.text.value
+    policy_version: Optional[int] = None
 
 
 class EventReasonIn(BaseModel):
@@ -189,12 +196,16 @@ class Stats(BaseModel):
     by_queue: dict[str, int]
     by_grade: dict[str, int]
     by_action: dict[str, int]
+    # Event count per policy_version ("12": n); null versions count as "none".
+    by_policy_version: dict[str, int] = Field(default_factory=dict)
 
 
 class ExportResult(BaseModel):
     exported: int
     file: str
     public_key_fingerprint: str
+    # Last exported event ID when more rows match; pass back as ?cursor=.
+    next_cursor: Optional[int] = None
 
 
 # --- Process / decide flow (local_ai on the in-house server) -----------------

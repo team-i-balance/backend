@@ -61,14 +61,15 @@ GET /cases/INC-42
     "reverted": false,
     "restored": false,
     "content_hash": null,
-    "queue": "pre_warning"
+    "queue": "pre_warning",
+    "policy_version": 12
   },
   "close": {
     "conclusion": "violation",
     "cause": "care",
     "memo": "사유 확인 — 위반",
     "rule": null,
-    "by": "unauthenticated",
+    "by": "security:3f2a9c1b7d4e",
     "at": "2026-11-05T06:10:00+00:00"
   },
   "history": [
@@ -79,7 +80,7 @@ GET /cases/INC-42
       "cause": "care",
       "memo": "사유 확인 — 위반",
       "rule": null,
-      "by": "unauthenticated",
+      "by": "security:3f2a9c1b7d4e",
       "at": "2026-11-05T06:10:00+00:00"
     }
   ]
@@ -92,6 +93,9 @@ GET /cases/INC-42
   `event.reason_at` 제출 시각으로 읽습니다. 제출 방법은 [직원 사유 API](event-reason-api.md)를 참고하세요.
   사유가 늦게 도착해도 기존 보안팀 결론과 처리 이력은 바뀌지 않습니다.
   선택 컨텍스트 `user_id`, `dept`, `target_ai`, `device_id`와 항목별 `items`도 함께 반환합니다.
+  `event.policy_version`은 그 입력을 처리할 때 적용 중이던 정책 버전(정수)입니다.
+  카드의 "전송 당시 정책 v12"에 그대로 쓰고, `null`(예전 이벤트·버전을 보내지 않은 클라이언트·
+  적용 중인 정책 없음)이면 표시하지 않습니다. 자세한 기준은 [로그 문서](log-stats-api.md#이벤트의-정책-버전)를 참고하세요.
   예전 이벤트의 컨텍스트는 `null`, `items`는 빈 배열입니다. `user_id` 등은 클라이언트가
   전달한 메타데이터이며 인증된 처리자 정보가 아닙니다. 직원 이름·원문을 만들어내지 않습니다.
 - `status`는 `open` 또는 `closed`, 열린 건의 `close`는 `null`입니다.
@@ -148,14 +152,36 @@ Content-Type: application/json
 
 그 외 요청 형식·길이·허용값 오류는 FastAPI 표준 `422`입니다. 알 수 없는 종결 요청 필드도 거부합니다.
 
+## 인증
+
+`/cases` 전체(목록·상세·종결·다시 열기·일괄 종결)는 **보안팀 토큰**이 필요합니다(이슈 #45).
+`Authorization: Bearer <SECURITY_TOKENS 또는 dev-token(scope=security)>`를 붙이세요.
+
+| 요청 | 응답 |
+| --- | --- |
+| 토큰 없음 / 알 수 없는 토큰 | `401` |
+| api 토큰(`API_TOKENS`, dev-token `scope=api`) | `403 security token required` |
+| security 토큰 | 정상 처리(`200` 등) |
+
+인증·권한 검사는 본문 검증보다 먼저 수행되므로 권한이 없으면 이력이 남지 않습니다.
+콘솔은 프록시가 `BACKEND_TOKEN`(보안팀 토큰)을 모든 요청에 붙이므로 웹 변경이 필요 없습니다.
+
 ## 처리자와 콘솔 연결
 
-시각 `at`는 서버가 UTC로 기록합니다. 처리자 `by`는 서버의 `get_reviewer()` 의존성에서
-정하며, 요청 본문·헤더의 이름을 신뢰하지 않습니다. 현재는 인증이 없으므로 모든 실제
-요청이 **`unauthenticated`**로 기록됩니다. 실제 누가 처리했는지는 아직 식별할 수 없습니다.
-인증 이슈 [#10](https://github.com/team-i-balance/backend/issues/10) 구현 시 이 의존성을
-검증된 계정 ID로 교체하고 `/cases` 전체에 보안팀 권한 검사를 연결해야 합니다.
-인증 연결 후에도 기존 익명 이력은 그대로 유지합니다.
+시각 `at`는 서버가 UTC로 기록합니다. 처리자 `by`는 서버의 `get_reviewer()` 의존성이
+**검증된 토큰**에서 정하며, 요청 본문·헤더의 이름(`X-Reviewer` 등)을 신뢰하지 않습니다.
+토큰에는 사람 이름이 없으므로 토큰별 라벨을 남깁니다.
+
+| 토큰 출처 | `by` 값 |
+| --- | --- |
+| 환경변수 `SECURITY_TOKENS` | `security:<토큰 SHA-256 앞 12자리>` |
+| 실행 중 발급한 dev-token(`scope=security`) | `security-dev:<토큰 SHA-256 앞 12자리>` |
+| 테스트용 `AUTH_DISABLED=1`에서 유효 토큰 없이 호출 | `auth-disabled` |
+
+토큰 원문은 기록하지 않습니다. 같은 토큰은 항상 같은 라벨이므로 운영자는 보유한 토큰의
+해시 앞자리와 대조해 누가 처리했는지 확인할 수 있습니다. dev-token은 프로세스 재시작 시
+사라지므로 장기 식별이 필요하면 `SECURITY_TOKENS`에 담당자별 토큰을 등록하세요.
+#45 이전에 남은 `unauthenticated` 이력은 그대로 유지합니다.
 
 프론트에서는 현재 `/logs/events`를 읽어 매번 열린 건으로 재생성하는 `casesFrom()` 대신
 `/cases`를 조회하고, 처리 버튼에서 위 API를 호출한 **성공 응답**으로 상태를 갱신하세요.
@@ -167,9 +193,10 @@ Content-Type: application/json
 ## 검증
 
 ```bash
-python -m pytest tests/test_cases.py -q
+python -m pytest tests/test_cases.py tests/test_case_auth.py -q
 python -m pytest -q
 ```
 
 대상 분류, 커서 페이지 이동, 결론별 종결·다시 열기·재종결, 프로세스 재시작과 기존 DB
-업그레이드, 동시 요청 충돌, 일괄 처리 실패 시 전체 롤백, 입력 검증을 확인합니다.
+업그레이드, 동시 요청 충돌, 일괄 처리 실패 시 전체 롤백, 입력 검증, 토큰별 401/403/200과
+처리자 라벨(토큰 원문 미저장)을 확인합니다.

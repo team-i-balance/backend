@@ -363,3 +363,88 @@ def test_browser_can_read_etag_and_send_if_match(client):
     })
     assert preflight.status_code == 200
     assert "if-match" in preflight.headers["access-control-allow-headers"].lower()
+
+
+# --- #46: console plaintext must never reach a signed bundle -----------------
+SECRET_WORD = "프로젝트-오로라"
+SECRET_EXCLUDE = "010-0000-1234"
+
+
+def console_state():
+    return {"dict": [{"word": SECRET_WORD, "type": "회사 고유 단어"}],
+            "exclude": [{"value": SECRET_EXCLUDE}], "tab": "dict"}
+
+
+def test_issue_46_bodyless_publish_never_signs_console_plaintext(client):
+    saved = save(client, console_state=console_state())
+    assert saved["console_state"] == console_state()
+    assert "console" not in saved["payload"]
+    response = client.post("/policy/publish", headers={"If-Match": saved["etag"]})
+    assert response.status_code == 200
+    latest = client.get("/policy/latest").json()
+    raw = base64.b64decode(latest["payload"]).decode("utf-8")
+    assert decode(latest) == {**payload(), "version": 1}
+    assert '"console' not in raw
+    for secret in (SECRET_WORD, SECRET_EXCLUDE):
+        assert secret not in raw and secret not in json.dumps(latest, ensure_ascii=False)
+
+
+def test_console_state_is_saved_read_and_kept_after_publish(client):
+    assert draft(client)["console_state"] is None
+    saved = save(client, console_state=console_state())
+    assert draft(client) == saved and saved["console_state"] == console_state()
+    # Changing only console_state changes the ETag (optimistic locking covers it).
+    edited = {**console_state(), "tab": "exclude"}
+    resaved = save(client, saved, console_state=edited)
+    assert resaved["etag"] != saved["etag"]
+    assert client.put("/policy/draft", headers={"If-Match": saved["etag"]},
+                      json={"payload": payload(), "changes": []}).status_code == 409
+
+    assert client.post("/policy/publish", headers={"If-Match": resaved["etag"]}).status_code == 200
+    after = draft(client)
+    assert after["has_draft"] is False and after["changes"] == []
+    assert after["console_state"] == edited
+    assert "console" not in after["payload"]
+    # A direct-payload publish also keeps it; a later save without it clears it.
+    assert client.post("/policy/publish", json={"payload": payload()}).status_code == 200
+    assert draft(client)["console_state"] == edited
+    assert save(client)["console_state"] is None
+
+
+def test_console_state_survives_new_process(client):
+    from app.policy import PolicyStore
+
+    save(client, console_state=console_state())
+    restored = PolicyStore(db_path=os.environ["POLICY_DB_PATH"]).draft()
+    assert restored["console_state"] == console_state()
+    assert restored == draft(client)
+
+
+@pytest.mark.parametrize("key", ["console", "console_state"])
+@pytest.mark.parametrize("direct", [False, True])
+def test_publish_rejects_console_key_in_payload(client, direct, key):
+    from app.policy import store
+
+    # "console_state" misplaced inside payload must not be signed either (PR #52 review).
+    leaked = {**payload(), key: {"dict": [{"word": SECRET_WORD}]}}
+    if direct:
+        before = draft(client)
+        response = client.post("/policy/publish", json={"payload": leaked})
+    else:
+        # A legacy draft that still carries payload.console cannot be published.
+        before = save(client, payload=leaked)
+        response = client.post("/policy/publish", headers={"If-Match": before["etag"]})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "POLICY_PAYLOAD_CONSOLE_FORBIDDEN"
+    assert response.headers["cache-control"] == "no-store"
+    assert client.get("/policy/latest").status_code == 404
+    assert draft(client) == before and store.next_version() == 1
+
+
+@pytest.mark.parametrize("value", [[], "text", 1])
+def test_console_state_must_be_an_object(client, value):
+    before = draft(client)
+    response = client.put("/policy/draft", headers={"If-Match": before["etag"]},
+                          json={"payload": {}, "changes": [], "console_state": value})
+    assert response.status_code == 422
+    assert draft(client) == before

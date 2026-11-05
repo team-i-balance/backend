@@ -10,6 +10,8 @@ import os
 
 import pytest
 
+from tests.test_file_api import api  # noqa: F401 (fixture)
+
 from app.grading import decide_grade
 from app.policy import ActivePolicy
 from app.policy_apply import apply_policy_to_detector, compile_policy, value_hashes
@@ -194,8 +196,12 @@ def test_rules_merge_over_base_rules():
     det, slm = slm_detector(BASE)
     rules = [{"id": "r-1", "label": "고객 ID", "description": "CU로 시작", "grade": "S", "action": "삭제"},
              {"id": "r-2", "label": "계약 금액", "description": "", "grade": "C", "action": "대체"}]
+    shared = dict(slm.rules)
     compiled = apply_policy_to_detector(det, active(rules=rules))
-    labels = {r["label"]: (r["id"], r["grade"]) for r in slm.rules.values()}
+    assert slm.rules == shared  # the shared SLM is never modified; requests use the view
+    view_rules, view_labels = compiled.slm_view
+    assert view_labels["고객 ID"] == "r-1"
+    labels = {r["label"]: (r["id"], r["grade"]) for r in view_rules.values()}
     assert labels["고객 ID"] == ("r-1", "S")
     assert labels["계약 금액"] == ("r-2", "C")  # bundle rule replaces the base rule
     assert labels["미공개 프로젝트명"] == ("R01", "C")
@@ -203,8 +209,8 @@ def test_rules_merge_over_base_rules():
     # A span from bundle rule r-1 takes the rule's action.
     assert compiled(" x", [{"start": 1, "end": 2, "type": "INTERNAL", "rule_id": "r-1"}])[0]["method"] == "삭제"
     # No policy: back to the base rules.
-    apply_policy_to_detector(det, None)
-    assert {r["id"] for r in slm.rules.values() if not r["id"].startswith("P-")} == {"R01", "R05"}
+    none = apply_policy_to_detector(det, None)
+    assert {r for r in none.slm_view[0] if not r.startswith("P-")} == {"R01", "R05"}
 
 
 @pytest.mark.parametrize("bad", [
@@ -218,7 +224,8 @@ def test_rejected_rules_keep_previous_policy(bad, caplog):
     before = dict(slm.rules)
     with caplog.at_level(logging.WARNING, logger="app.policy_apply"):
         effective = apply_policy_to_detector(det, active(version=2, types={"이메일": {"on": False}}, rules=bad))
-    assert effective is good
+    assert effective is good and effective.version == 1
+    assert effective.slm_view[1]["고객 ID"] == "r-9"
     assert slm.rules == before
     assert found(det, f"{PHONE} a@b.com") == [("a@b.com", "EMAIL")]  # v1 still applies
     assert "keeping the previous policy" in caplog.text and "고객 ID" not in caplog.text
@@ -234,6 +241,38 @@ def test_malformed_rules_are_skipped_not_fatal():
     apply_policy_to_detector(det, active(types={"전화번호": {"on": False}}, rules=[{"id": "r1", "label": "고객 ID"}]))
     assert found(det, PHONE) == []
     assert "r1" not in slm.rules
+    assert "r1" not in apply_policy_to_detector(det, active(rules=[{"id": "r1", "label": "고객 ID"}])).slm_view[0]
+
+
+class ViewSlm:
+    """Fake SLM: reports which rules view each call used."""
+
+    def __init__(self, base):
+        real = SlmSpanDetector.__new__(SlmSpanDetector)
+        real.fixed = []
+        real.set_policy(base)
+        self.rules, self.label2id, self.rules_view = real.rules, real.label2id, real.rules_view
+
+    def detect(self, text, view=None):
+        labels = (view or (self.rules, self.label2id))[1]
+        if "고객 ID" in labels and "CU-1" in text:
+            st = text.index("CU-1")
+            return [{"start": st, "end": st + 4, "type": "CONFIDENTIAL", "rule_id": labels["고객 ID"]}]
+        return []
+
+
+def test_bound_policies_do_not_mix_on_a_shared_detector():
+    det = Detector(None)
+    det._slm, det.model_enabled = ViewSlm(BASE), True
+    v1 = apply_policy_to_detector(det, active(version=1, types={"전화번호": {"on": False}},
+                                              rules=[{"id": "r-1", "label": "고객 ID", "grade": "C", "action": "삭제"}]))
+    v2 = apply_policy_to_detector(det, active(version=2))  # a deploy lands mid-request
+    text = f"CU-1 {PHONE}"
+    with LocalSession(v1.bind(det)) as session:
+        assert session.process(text).text == "[삭제됨] " + PHONE
+    with LocalSession(v2.bind(det)) as session:
+        assert session.process(text).text == "CU-1 [전화번호_1]"
+    assert (v1.version, v2.version) == (1, 2)
 
 
 def test_unexpected_error_keeps_previous_policy(monkeypatch):
@@ -269,3 +308,25 @@ def test_process_grade_override(client):
     _deploy(client, types={"전화번호": {"on": True, "grade": "C"}})
     r = client.post("/process", json={"text": f"연락 {PHONE}", "rules_only": True}).json()
     assert r["grade"] == "confidential_C"
+
+
+def test_failed_apply_logs_the_version_actually_used(api, monkeypatch):
+    """Text and file events record the policy that detected, not a newer one that failed."""
+    import sys
+    from tests.test_file_api import upload, workbook_bytes
+
+    client = api.client
+    _deploy(client, version=1, types={"전화번호": {"on": False}})
+    assert client.post("/process", json={"text": PHONE, "rules_only": True}).json()["detected_types"] == []
+    module = sys.modules["app.policy_apply"]
+    real = module.compile_policy
+    monkeypatch.setattr(module, "compile_policy",
+                        lambda p: real(p) if p.version == 1 else (_ for _ in ()).throw(RuntimeError("boom")))
+    _deploy(client, version=2)
+    work = client.post("/process", json={"text": PHONE, "rules_only": True}).json()
+    assert work["detected_types"] == []  # v1 still detects
+    decided = client.post("/process/decide", json={"work_id": work["work_id"], "action": "cancel"}).json()
+    assert decided["event"]["policy_version"] == 1
+    ready = upload(api, workbook_bytes()).json()
+    assert client.get(f"/files/{ready['work_id']}/download").status_code == 200
+    assert [e["policy_version"] for e in client.get("/logs/events").json()] == [1, 1]

@@ -19,6 +19,7 @@ off in production with DISABLE_DEV_TOKEN=1.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import threading
@@ -102,3 +103,36 @@ def require_security(creds: HTTPAuthorizationCredentials | None = Depends(_beare
 
 
 
+
+
+def token_label(token: str) -> str:
+    """Stable, non-reversible per-token label: first 12 hex of SHA-256.
+
+    Used wherever a principal must be recorded (e.g. case history `by`).
+    The raw token is never stored or logged.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def security_principal(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> str:
+    """Principal of the verified security token, for audit records.
+
+    Returns "security:<sha256 prefix>" for env-configured SECURITY_TOKENS and
+    "security-dev:<sha256 prefix>" for runtime-issued dev tokens. Never returns
+    the raw token. Under AUTH_DISABLED without a valid security token it returns
+    "auth-disabled" so records made by the test/dev bypass are distinguishable.
+    """
+    token = None
+    if creds is not None and (creds.scheme or "").lower() == "bearer" and creds.credentials:
+        token = creds.credentials
+    if token is not None:
+        if token in _env_tokens("SECURITY_TOKENS"):
+            return f"security:{token_label(token)}"
+        with _lock:
+            issued = token in _issued["security"]
+        if issued:
+            return f"security-dev:{token_label(token)}"
+    if _auth_disabled():
+        return "auth-disabled"
+    # Callers must already be behind require_security; fail closed otherwise.
+    raise HTTPException(status_code=401, detail="invalid token")

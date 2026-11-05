@@ -9,6 +9,8 @@ from app.file_events import FileEvent
 from app.file_schemas import FileResult, FileSummary
 from app.file_store import FileStoreFull, FileWorkStore
 from app.grading import decide_grade
+from app.policy import store as policy_store
+from app.policy_apply import apply_policy_to_detector
 from app.schemas import Action, Grade
 from file_sanitizer import LocalPIIProcessor, sanitize_xlsx
 from file_sanitizer.local_pii import Findings
@@ -90,14 +92,15 @@ class FileProcessingJob:
             except Exception:
                 return self.failure(503, "MODEL_UNAVAILABLE")
 
-            from app.policy import store as policy_store
-            from app.policy_apply import apply_policy_to_detector
-
-            # Same active policy as /process (#47); a failed apply keeps the previous one.
-            overrides = apply_policy_to_detector(detector, policy_store.current()).grade_overrides
-            session = LocalSession(detector)
+            # Snapshot the active policy once and check the whole file with that
+            # compiled policy only (types, rules, dict, exclude, grade, method), then
+            # log the same version (#47, #49): a deploy during a long upload must not
+            # mix policies or relabel the result. A failed apply keeps the previous
+            # policy, and ``policy.version`` is the one actually used.
+            policy = apply_policy_to_detector(detector, policy_store.current())
+            session = LocalSession(policy.bind(detector))
             processor = LocalPIIProcessor(
-                session, classify=lambda types: classify_file_types(types, overrides),
+                session, classify=lambda types: classify_file_types(types, policy.grade_overrides),
             )
             result = sanitize_xlsx(data, self.work_id, processor, filename=filename)
             if result.status == "FAILED":
@@ -108,6 +111,7 @@ class FileProcessingJob:
                 work_id=self.work_id, grade=_GRADES[result.grade],
                 findings=processor.findings, data=data,
                 model_enabled=detector.model_enabled,
+                policy_version=policy.version,
             )
             if blocked:
                 # Like /process/decide, answer only once the event is stored (#32).

@@ -5,7 +5,7 @@ What the server honours (see docs/policy-apply.md for the full table):
   types[].on      detection type off -> not detected, not pseudonymized
   types[].grade   per-type grade override for app/grading.decide_grade
   types[].method  대체/일반화/삭제/태그 per detection type (local_ai/pseudonym.py)
-  rules           company rules for the server SLM (SlmSpanDetector.set_policy),
+  rules           company rules for the server SLM (SlmSpanDetector.rules_view, per request),
                   merged over the rules the SLM was loaded with
   dict            hashed company words found in the input -> CONFIDENTIAL/INTERNAL
   exclude         hashed values never reported, whatever detector found them
@@ -34,7 +34,7 @@ import os
 import re
 import threading
 import weakref
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:  # typing only: keeps this module importable without the signing stack
@@ -163,8 +163,13 @@ class _DictEntry:
 
 @dataclass(frozen=True)
 class ServerPolicy:
-    """Everything the server applies, compiled from one ActivePolicy."""
+    """Everything the server applies, compiled from one ActivePolicy.
 
+    Immutable: a request binds it to the shared detector (``bind``) and detects with it
+    alone, so a deploy in the middle of a request cannot mix two policies.
+    """
+
+    version: Optional[int] = None                        # policy version (None: no policy)
     disabled_types: frozenset = frozenset()
     grade_overrides: dict = field(default_factory=dict)
     methods: dict = field(default_factory=dict)          # detector type -> method
@@ -173,6 +178,12 @@ class ServerPolicy:
     dict_entries: dict = field(default_factory=dict)     # hash -> _DictEntry
     exclude: frozenset = frozenset()
     hmac_key: Optional[bytes] = field(default=None, repr=False)
+    # SLM (rules by id, label -> id) for this policy; None = the SLM's loaded rules.
+    slm_view: Optional[tuple] = field(default=None, repr=False)
+
+    def bind(self, detector):
+        """A detector view that checks with this policy only (pass it to LocalSession)."""
+        return BoundDetector(detector, self) if _accepts_policy(detector) else detector
 
     @property
     def has_span_policy(self) -> bool:
@@ -249,7 +260,7 @@ class ServerPolicy:
 
 def _compile_rules(rules, version) -> tuple[Optional[tuple], dict]:
     """Bundle rules in SLM form. A rule the SLM cannot use (no id/label, grade not S|C) is
-    skipped with a warning; duplicates are left for SlmSpanDetector.set_policy to reject."""
+    skipped with a warning; duplicates are left for SlmSpanDetector.rules_view to reject."""
     if not isinstance(rules, list):
         raise PolicyApplyError("rules must be a list")
     out, actions, skipped = [], {}, 0
@@ -314,6 +325,7 @@ def compile_policy(policy: Optional[ActivePolicy]) -> ServerPolicy:
         log.warning("policy v%s: %d dict/exclude entries ignored (bad hash format)",
                     policy.version, invalid)
     return ServerPolicy(
+        version=policy.version,
         disabled_types=frozenset(disabled),
         grade_overrides=grade_overrides(policy),
         methods=type_methods(policy),
@@ -326,6 +338,26 @@ def compile_policy(policy: Optional[ActivePolicy]) -> ServerPolicy:
 
 
 # --- applying to a detector -----------------------------------------------------
+def _accepts_policy(detector) -> bool:
+    from local_ai.detector import Detector
+    return isinstance(detector, Detector)
+
+
+class BoundDetector:
+    """The shared detector plus one compiled policy, for one request or file job."""
+
+    def __init__(self, detector, policy: ServerPolicy):
+        self._detector = detector
+        self.policy = policy
+
+    @property
+    def model_enabled(self) -> bool:
+        return self._detector.model_enabled
+
+    def detect(self, text: str) -> list[dict]:
+        return self._detector.detect(text, policy=self.policy)
+
+
 @dataclass
 class _State:
     fingerprint: Optional[str]
@@ -355,10 +387,8 @@ def _fingerprint(policy: Optional[ActivePolicy]) -> Optional[str]:
                           .encode("utf-8")).hexdigest()
 
 
-def _slm_rules(base_rules: Optional[list], compiled: ServerPolicy) -> Optional[list]:
+def _slm_rules(base_rules: list, compiled: ServerPolicy) -> list:
     """SLM rules for this policy: bundle rules override base rules with the same id/label."""
-    if base_rules is None:
-        return None
     bundle = list(compiled.rules or ())
     labels, ids = {r["label"] for r in bundle}, {r["id"] for r in bundle}
     return [r for r in base_rules if r["label"] not in labels and r["id"] not in ids] + bundle
@@ -371,11 +401,26 @@ def _set_detector(detector, compiled: ServerPolicy) -> None:
     )
 
 
+# The last policy that applied successfully (any detector), for detectors seeing a
+# failing policy first.
+_last_good: list = [None]
+
+
+def _compile_for(slm, state: _State, policy) -> ServerPolicy:
+    compiled = compile_policy(policy)
+    if state.base_rules is not None and hasattr(slm, "rules_view"):
+        # Raises ValueError for duplicate labels/ids or a fixed label.
+        compiled = replace(compiled, slm_view=slm.rules_view(_slm_rules(state.base_rules, compiled)))
+    return compiled
+
+
 def apply_policy_to_detector(detector, policy: Optional[ActivePolicy]) -> ServerPolicy:
-    """Configure a detector from the active policy (idempotent, cheap when unchanged).
+    """Compile the active policy for a detector (cached while the policy is unchanged).
 
     Returns the policy now in effect: the new one, or the previous one when the new
-    one failed to apply. Never raises for a bad policy.
+    one failed to apply. Never raises for a bad policy. Request paths detect with
+    ``result.bind(detector)``; the shared SLM is never modified. For direct callers the
+    detector's own set_policy state is also updated (types on/off, span policy).
     """
     fingerprint = _fingerprint(policy)
     with _lock:
@@ -391,20 +436,25 @@ def apply_policy_to_detector(detector, policy: Optional[ActivePolicy]) -> Server
                     if slm is not None and isinstance(getattr(slm, "rules", None), dict) else None)
             state = _State(fingerprint=_UNSET, effective=ServerPolicy(), base_rules=base)
         try:
-            compiled = compile_policy(policy)
-            rules = _slm_rules(state.base_rules, compiled)
-            if slm is not None and rules is not None:
-                # Raises ValueError for duplicate labels/ids or a fixed label; nothing changes then.
-                slm.set_policy(rules)
-            _set_detector(detector, compiled)
+            compiled = _compile_for(slm, state, policy)
         except Exception as exc:
             # Keep the previous policy. Exception text may quote policy content: log the type only.
             log.warning("policy v%s could not be applied on the server (%s); keeping the previous policy",
                         getattr(policy, "version", None), type(exc).__name__)
+            if state.fingerprint == _UNSET and _last_good[0] is not None:
+                # A detector seeing its first policy (e.g. built after a restart or for another
+                # mode): "previous" is the last policy that applied anywhere in this process.
+                try:
+                    state.effective = _compile_for(slm, state, _last_good[0])
+                except Exception:
+                    pass
+            _set_detector(detector, state.effective)
             # Remember the failed policy so it is not retried (and logged) on every request.
             state.fingerprint = fingerprint
             _remember(detector, state)
             return state.effective
+        _set_detector(detector, compiled)
+        _last_good[0] = policy
         state.fingerprint = fingerprint
         state.effective = compiled
         _remember(detector, state)

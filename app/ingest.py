@@ -52,6 +52,7 @@ def build_event(
     device_id: Optional[str] = None,
     reason_text: Optional[str] = None,
     items: Optional[list[EventItem]] = None,
+    policy_version: Optional[int] = None,
 ) -> EventIn:
     """Construct the EventIn for a user's decision on a processed item."""
     # reverted: user rolled back to the original (revert_original).
@@ -76,4 +77,5 @@ def build_event(
         device_id=device_id,
         reason_text=reason_text,
         items=items or [],
+        policy_version=policy_version,
     )

@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS event_log (
     target_ai       TEXT,
     device_id       TEXT,
     reason_text     TEXT,
-    items           TEXT    NOT NULL DEFAULT '[]'
+    items           TEXT    NOT NULL DEFAULT '[]',
+    -- Policy version in effect when the input was processed (issue #49)
+    policy_version  INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_created_at ON event_log (created_at);
@@ -119,6 +121,10 @@ def init_db() -> None:
         if "source" not in columns:
             # Which flow produced the event (issue #32); all earlier rows are text events.
             conn.execute("ALTER TABLE event_log ADD COLUMN source TEXT NOT NULL DEFAULT 'text'")
+        if "policy_version" not in columns:
+            # Policy version in effect when the input was processed (issue #49).
+            # Earlier rows stay NULL: their version is unknown, never guessed.
+            conn.execute("ALTER TABLE event_log ADD COLUMN policy_version INTEGER")
         # Older databases lack user_id until the migrations above finish.
         # Keep the new index in the same transaction; don't hide DDL failures.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_event_user_id ON event_log (user_id)")
