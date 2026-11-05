@@ -2,9 +2,9 @@
 from datetime import datetime, timezone
 
 from app.classify import classify
-from app.crud import _row_to_dict
+from app.crud import _row_to_dict, is_reason_followup_target
 from app.db import get_conn
-from app.schemas import Action, EventIn, EventReasonIn, Grade
+from app.schemas import EventIn, EventReasonIn
 
 
 class ReasonError(Exception):
@@ -24,8 +24,7 @@ def submit_reason(event_id: int, body: EventReasonIn) -> dict:
             raise ReasonError(404, "EVENT_NOT_FOUND")
         event = _row_to_dict(row)
         if (
-            event["grade"] != Grade.sensitive.value
-            or event["action"] != Action.send_as_is.value
+            not is_reason_followup_target(event["grade"], event["action"])
             or event["reason_requested_at"] is None
         ):
             raise ReasonError(409, "REASON_NOT_REQUESTED")
@@ -64,8 +63,7 @@ def reason_status(event_id: int) -> dict:
     return {
         "event_id": row["id"],
         "reason_needed": (
-            row["grade"] == Grade.sensitive.value
-            and row["action"] == Action.send_as_is.value
+            is_reason_followup_target(row["grade"], row["action"])
             and row["reason_requested_at"] is not None
             and row["reason_at"] is None
         ),

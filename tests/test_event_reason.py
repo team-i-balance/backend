@@ -85,10 +85,27 @@ def test_identical_retry_is_idempotent_but_other_explanation_cannot_overwrite(cl
         assert get_event(client, event["id"]) == first
 
 
+@pytest.mark.parametrize("grade", ["sensitive_S", "confidential_C"])
+@pytest.mark.parametrize("action", ["send_as_is", "revert_original"])
+def test_unexplained_raw_send_waits_for_reason_and_accepts_it(client, grade, action):
+    # #60 widened the wait to revert_original, #62 to confidential raw sends.
+    original = create(client, grade=grade, action=action)
+    assert original["reason_requested_at"] == original["created_at"]
+    status = client.get(f"/events/{original['id']}/reason").json()
+    assert status["reason_needed"] is True
+    response = submit(client, original["id"])
+    assert response.status_code == 200, response.text
+    assert response.json()["reason"] == "business_need"
+    assert response.json()["reason_requested_at"] == original["reason_requested_at"]
+    assert client.get(f"/events/{original['id']}/reason").json()["reason_needed"] is False
+
+
 @pytest.mark.parametrize("overrides", [
-    {"grade": "public_O"}, {"grade": "confidential_C"},
+    {"grade": "public_O"}, {"grade": "public_O", "action": "revert_original"},
+    {"grade": "confidential_C", "action": "send_transformed"},
+    {"grade": "confidential_C", "action": "cancel"},
+    {"grade": "confidential_C", "reason": "false_positive"},
     {"action": "send_transformed"}, {"action": "cancel"},
-    {"action": "revert_original"},
     {"action": "revert_original", "reason": "business_need"},
     {"reason": "false_positive"},
 ])
@@ -196,6 +213,10 @@ def test_legacy_database_upgrade_keeps_rows_and_backfills_tracking(client, tmp_p
             ("sensitive_S", "send_as_is", None, "pre_warning"),
             ("sensitive_S", "revert_original", "business_need", "violation_candidate"),
             ("public_O", "send_as_is", None, "pre_warning"),
+            ("sensitive_S", "revert_original", None, "real_violation"),
+            ("confidential_C", "send_as_is", None, "real_violation"),
+            ("confidential_C", "revert_original", "false_positive", "detection_improve"),
+            ("confidential_C", "cancel", None, "pre_warning"),
         ])
     monkeypatch.setattr(db, "DB_PATH", legacy_path)
     db.init_db()
@@ -206,12 +227,33 @@ def test_legacy_database_upgrade_keeps_rows_and_backfills_tracking(client, tmp_p
     assert immediate["reason_at"] == immediate["created_at"]
     assert immediate["reason_requested_at"] is None
     assert public["reason_requested_at"] is None and public["reason_at"] is None
+    # #60/#62: unexplained S revert and C raw sends wait too; others do not.
+    revert, confidential = get_event(client, 4), get_event(client, 5)
+    assert revert["reason_requested_at"] == revert["created_at"]
+    assert confidential["reason_requested_at"] == confidential["created_at"]
+    for i in (6, 7):
+        assert get_event(client, i)["reason_requested_at"] is None
     result = submit(client, 1)
     assert result.status_code == 200
     db.init_db()
     assert get_event(client, 1) == result.json()
     assert get_event(client, 2) == immediate
     assert get_event(client, 3) == public
+
+
+def test_backfill_keeps_existing_request_times(client):
+    from app.db import get_conn, init_db
+
+    revert = create(client, action="revert_original")
+    confidential = create(client, grade="confidential_C")
+    with get_conn() as conn:
+        conn.execute("UPDATE event_log SET reason_requested_at = ? WHERE id = ?",
+                     ("2026-02-02T00:00:00+00:00", revert["id"]))
+        conn.execute("UPDATE event_log SET reason_requested_at = NULL WHERE id = ?",
+                     (confidential["id"],))
+    init_db()
+    assert get_event(client, revert["id"])["reason_requested_at"] == "2026-02-02T00:00:00+00:00"
+    assert get_event(client, confidential["id"])["reason_requested_at"] == confidential["created_at"]
 
 
 def test_existing_reason_text_column_and_content_survive_upgrade(client, tmp_path, monkeypatch):

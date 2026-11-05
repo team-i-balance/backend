@@ -1,20 +1,21 @@
 # 원문 전송 후 직원 사유 제출
 
-`POST /events/{event_id}/reason`은 직원이 민감정보 원문 전송 후 사유를 제출하는 API입니다.
+`POST /events/{event_id}/reason`은 직원이 민감(S)·기밀(C) 정보 원문 전송 후 사유를 제출하는 API입니다.
 이벤트 ID는 `/process/decide` 응답의 `event.id` 또는 `/logs/events`의 `id`를 사용합니다.
 처리 세션의 `work_id`가 만료되거나 해제되어도 사유는 제출할 수 있습니다.
 
 ## 흐름
 
-1. `grade=sensitive_S`, `action=send_as_is`, `reason=null` 이벤트가 저장되면
-   서버가 `reason_requested_at`을 전송 이벤트 생성 시각으로 기록합니다.
+1. `grade`가 `sensitive_S` 또는 `confidential_C`이고 `action`이 `send_as_is` 또는 `revert_original`이며
+   `reason=null`인 이벤트가 저장되면 서버가 `reason_requested_at`을 전송 이벤트 생성 시각으로 기록합니다
+   (되돌림은 #60, 기밀은 #62부터).
    이는 사유 제출이 필요하다는 상태이며, 직원에게 알림을 전송하는 기능은 포함하지 않습니다.
 2. 직원 앱이 이벤트 ID와 사유 코드·본문을 아래 API로 보냅니다.
 3. 서버가 사유와 제출 시각을 SQLite에 저장하고 최신 이벤트를 반환합니다.
 4. 콘솔이 로그를 다시 읽어 `reason_at`이 있으면 ‘사유 도착’으로 표시합니다.
 
-공개 전송, 기밀 차단, 변환 전송, 취소, 되돌림, 이미 전송 시 사유를 선택한 이벤트는
-후속 사유 요청 대상이 아닙니다. 현재 콘솔의 필수 검토 기준인 민감 원문 전송에 맞춥니다.
+공개 전송, 변환 전송, 취소, 이미 전송 시 사유를 선택한 이벤트는 후속 사유 요청 대상이 아닙니다.
+사유 대기가 걸린 이벤트는 [검토 API](case-api.md)에서 사유가 도착해도 필수(`required`) 검토 건으로 남습니다.
 
 ```http
 POST /events/42/reason
@@ -66,7 +67,7 @@ Content-Type: application/json
 }
 ```
 
-`reason_needed`는 민감 원문 전송이면서 사유 대기 중이고 아직 제출하지 않았을 때만 `true`입니다.
+`reason_needed`는 민감·기밀 원문 전송(`send_as_is`·`revert_original`)이면서 사유 대기 중이고 아직 제출하지 않았을 때만 `true`입니다.
 없는 이벤트는 `404 EVENT_NOT_FOUND`이고, 응답에는 `Cache-Control: no-store`가 붙습니다.
 
 ## 재시도와 오류
@@ -85,9 +86,9 @@ Content-Type: application/json
 ## 기존 DB와 검토 API 연결
 
 서버 시작 시 `LOG_DB_PATH`의 기존 DB에 부족한 필드를 추가합니다. `reason_text`가
-이미 있는 DB에서도 해당 값은 보존합니다. 기존 미제출 민감 원문 전송은
+이미 있는 DB에서도 해당 값은 보존합니다. 기존 미제출 민감·기밀 원문 전송(`send_as_is`·`revert_original`)은
 `reason_requested_at=created_at`, 전송 시 사유가 있던 이벤트는 `reason_at=created_at`으로
-보완합니다. 이는 기존 이벤트 생성 시각으로 추정한 값이며 과거 알림 발송 시각을 뜻하지 않습니다.
+보완합니다(`reason_requested_at`이 이미 있는 행은 바꾸지 않습니다). 이는 기존 이벤트 생성 시각으로 추정한 값이며 과거 알림 발송 시각을 뜻하지 않습니다.
 이미 저장된 제출 내용·시각은 재시작으로 바뀌지 않습니다.
 
 검토 상세 `/cases/INC-42`의 `event.reason`, `event.reason_text`,

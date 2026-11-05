@@ -160,6 +160,18 @@ def test_reason_request_bumps_requested_at(client):
     assert again["reason_requested_at"] >= after["reason_requested_at"]
 
 
+@pytest.mark.parametrize("grade,action", [
+    ("sensitive_S", "revert_original"), ("confidential_C", "send_as_is"),
+    ("confidential_C", "revert_original"),
+])
+def test_reason_request_covers_revert_and_confidential_raw_sends(client, grade, action):
+    raw = event(client, grade=grade, action=action, reason=None)
+    assert raw["reason_requested_at"] is not None
+    response = client.post(f"/events/{raw['id']}/reason-request")
+    assert response.status_code == 200, response.text
+    assert response.json()["reason_requested_at"] > raw["reason_requested_at"]
+
+
 def test_reason_request_rejects_ineligible_events(client):
     explained = event(client, action="send_as_is", reason=None)
     client.post(f"/events/{explained['id']}/reason",
@@ -167,7 +179,9 @@ def test_reason_request_rejects_ineligible_events(client):
     with_reason = event(client, action="send_as_is", reason="business_need")
     transformed = event(client, action="send_transformed", reason=None)
     public = event(client, grade="public_O", action="send_as_is", reason=None)
+    c_cancel = event(client, grade="confidential_C", action="cancel", reason=None)
     cases = [
+        (c_cancel, 409, "REASON_NOT_REQUESTED"),
         (explained, 409, "REASON_ALREADY_SUBMITTED"),
         (with_reason, 409, "REASON_ALREADY_SUBMITTED"),
         (transformed, 409, "REASON_NOT_REQUESTED"),

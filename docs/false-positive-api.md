@@ -125,7 +125,7 @@ dev 토큰은 `security-dev:<…>`로 기록하며 토큰 자체는 저장하지
 | 상태 | 의미 |
 | --- | --- |
 | `404 EVENT_NOT_FOUND` | 없는 이벤트 |
-| `409 REASON_NOT_REQUESTED` | 민감(`sensitive_S`) 원문 전송(`send_as_is`)이 아닌 이벤트 |
+| `409 REASON_NOT_REQUESTED` | 민감(`sensitive_S`)·기밀(`confidential_C`) 원문 전송(`send_as_is`·`revert_original`)이 아닌 이벤트 |
 | `409 REASON_ALREADY_SUBMITTED` | 이미 사유가 있는 이벤트(전송 때 사유를 고른 경우 포함) |
 | `422` | 잘못된 ID |
 

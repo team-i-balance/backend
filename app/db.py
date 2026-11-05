@@ -165,9 +165,13 @@ def init_db() -> None:
         """)
         # Older rows have no independent request/submission timestamps. Use
         # event creation time for their initial waiting state / initial reason.
+        # Same target as insert_event (app/crud.py is_reason_followup_target):
+        # S/C raw sends without a reason (#60, #62). Rows that already have a
+        # value keep it.
         conn.execute("""
             UPDATE event_log SET reason_requested_at = created_at
-            WHERE grade = 'sensitive_S' AND action = 'send_as_is'
+            WHERE grade IN ('sensitive_S', 'confidential_C')
+              AND action IN ('send_as_is', 'revert_original')
               AND reason IS NULL AND reason_requested_at IS NULL
         """)
         conn.execute("""

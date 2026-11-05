@@ -10,16 +10,32 @@ from datetime import datetime, timezone
 from app.case_schemas import CaseCloseIn, MAX_SQLITE_ID
 from app.db import get_conn
 
-# Match the console's casesFrom() in web/src/api/client.ts, rather than the
-# separate legacy log queues (which also include cancelled / safe sends).
+# Review cases are raw sends (the original text reached the external AI).
+# - sensitive_S: sent without a reason or with business_need (#60). A
+#   false_positive chosen at send time is a detection report, not a case
+#   (/false-positives). An event that was waiting for a reason
+#   (reason_requested_at set) stays a case whatever reason arrives later.
+# - confidential_C: always a case, false_positive included (#62).
+# Separate from the legacy log queues (app/classify.py).
 _ELIGIBLE = """
-    e.is_test = 0 AND e.grade = 'sensitive_S' AND (
-        e.action = 'send_as_is'
-        OR (e.action = 'revert_original' AND e.reason = 'business_need')
+    e.is_test = 0 AND e.action IN ('send_as_is', 'revert_original') AND (
+        e.grade = 'confidential_C'
+        OR (e.grade = 'sensitive_S' AND (
+            e.reason IS NULL OR e.reason = 'business_need'
+            OR e.reason_requested_at IS NOT NULL
+        ))
     )
 """
+# optional = an S raw send whose employee chose business_need when sending.
+# A reason given only after the request (sent without one) stays required,
+# and every confidential raw send is required.
+_NEED = """
+    CASE WHEN e.grade = 'sensitive_S' AND e.reason = 'business_need'
+              AND e.reason_requested_at IS NULL
+         THEN 'optional' ELSE 'required' END
+"""
 _SELECT = f"""
-    SELECT e.*,
+    SELECT e.*, {_NEED} AS review_need,
         h.id AS review_id, h.operation AS review_operation,
         h.created_at AS review_at, h.reviewer AS review_by,
         h.conclusion AS review_conclusion, h.cause AS review_cause,
@@ -51,7 +67,7 @@ def _case(row) -> dict:
     closed = row["review_operation"] == "close"
     return {
         "id": f"INC-{event['id']}",
-        "need": "required" if event["action"] == "send_as_is" else "optional",
+        "need": row["review_need"],
         "status": "closed" if closed else "open",
         "event": event,
         "close": {
@@ -98,8 +114,8 @@ def list_cases(*, queue: str, cursor: str | None, limit: int) -> dict:
         where = " AND h.operation = 'close'"
         order = "h.id"
     else:
-        where = " AND (h.operation IS NULL OR h.operation = 'reopen') AND e.action = ?"
-        params.append("send_as_is" if queue == "required" else "revert_original")
+        where = f" AND (h.operation IS NULL OR h.operation = 'reopen') AND {_NEED} = ?"
+        params.append(queue)
         order = "e.id"
     if boundary is not None:
         where += f" AND {order} < ?"
