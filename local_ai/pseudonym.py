@@ -14,6 +14,10 @@ class PseudonymError(ValueError):
     """Input spans or placeholders are ambiguous; review is required."""
 
 
+class PlaceholderReuseError(PseudonymError):
+    """New source text contains a placeholder this session already assigned."""
+
+
 _TYPE_LABELS = {
     "NAME": "이름",
     "PHONE": "전화번호",
@@ -103,7 +107,7 @@ class PseudonymSession:
         # If an existing placeholder reappears in new source text, its meaning
         # cannot be distinguished from literal user content, so fail closed.
         if any(token in text for token in self._mapping.values()):
-            raise PseudonymError("input contains an existing session placeholder")
+            raise PlaceholderReuseError("input contains an existing session placeholder")
 
         mapping = self._mapping.copy()
         counters = self._next.copy()

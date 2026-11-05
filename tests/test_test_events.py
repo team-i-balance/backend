@@ -144,6 +144,19 @@ def test_post_test_event_is_stored_and_classified(client):
     assert body["queue"] == normal["queue"]
 
 
+@pytest.mark.parametrize("source", ["text", "file"])
+def test_source_and_test_flag_are_both_preserved(client, source):
+    for is_test in (False, True):
+        response = client.post("/logs/events", json=_event(source=source, test=is_test))
+        assert response.status_code == 201
+        assert response.json()["source"] == source
+        assert response.json()["test"] is is_test
+    normal = client.get("/logs/events").json()
+    assert [(row["source"], row["test"]) for row in normal] == [(source, False)]
+    all_events = client.get("/logs/events", params={"include_test": "true"}).json()
+    assert [(row["source"], row["test"]) for row in all_events] == [(source, True), (source, False)]
+
+
 def test_list_excludes_test_by_default(client):
     client.post("/logs/events", json=_event(request_id="real"))
     client.post("/logs/events", json=_event(request_id="t", test=True))
