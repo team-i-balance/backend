@@ -14,6 +14,7 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | POST   | `/logs/events` | api | 런타임 이벤트 1건 저장·큐 분류(`"test": true`면 시험 이벤트, 선택 `policy_version`) |
 | GET    | `/logs/events` | security | 기간·등급·큐 필터와 커서 페이지 넘김 |
 | GET    | `/logs/stats` | security | 기간별 통계 및 행동·등급·큐별 건수 |
+| GET    | `/logs/changes` | security | 콘솔 폴링용 영역별 변경 표시값, `If-None-Match`가 맞으면 304 ([문서](docs/changes-api.md)) |
 | POST   | `/logs/export` | security | 보안팀 공개키로 암호화한 로그 파일 생성. 큐·기간(`start`/`end`) 필터, `limit`(기본 1,000·최대 10,000), `cursor`/`next_cursor` 페이지 넘김 |
 | POST   | `/events/{event_id}/reason` | api | 민감 원문 전송 후 직원 사유 제출·저장 |
 | GET    | `/events/{event_id}/reason` | api | 사유 필요 여부·재요청 시각(`reason_requested_at`) 조회, `no-store` ([문서](docs/event-reason-api.md)) |

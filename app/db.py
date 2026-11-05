@@ -149,6 +149,9 @@ def init_db() -> None:
         # Older databases lack user_id until the migrations above finish.
         # Keep the new index in the same transaction; don't hide DDL failures.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_event_user_id ON event_log (user_id)")
+        # GET /logs/changes reads MAX/COUNT of the reason columns on every console poll.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_event_reason_at ON event_log (reason_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_event_reason_requested_at ON event_log (reason_requested_at)")
         # Older rows have no independent request/submission timestamps. Use
         # event creation time for their initial waiting state / initial reason.
         conn.execute("""
