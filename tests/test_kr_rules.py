@@ -96,6 +96,7 @@ class KrRulesTests(unittest.TestCase):
             f'카드 주문번호 {VISA}',
             '신한 주문번호 110-123-456789',
             '비밀번호: {{SECRET}}',
+            '비밀번호 재설정: 이메일을 입력하세요',
             'version: 1.2.3.4',
         ]
         for text in cases:
@@ -135,12 +136,87 @@ class KrRulesTests(unittest.TestCase):
                     self.assertFalse(a['end'] > b['start'] and a['type'] != b['type'], spans)
         self.assertEqual(self.matched(f'생년월일 {dash_id(RRN)}'), [('ID_NUMBER', dash_id(RRN))])
 
-    def test_partial_overlap_fails_closed(self):
-        # Dropping the password would leak 'abc'/'xyz'; keep it so pseudonymization refuses.
-        spans = self.detector.detect('pw=abc010-1234-5678xyz')
-        self.assertIn({'start': 3, 'end': 22, 'type': 'PASSWORD'}, spans)
-        with self.assertRaises(PseudonymError):
-            LocalSession(Detector(None)).process('pw=abc010-1234-5678xyz')
+    def process(self, text):
+        with LocalSession(Detector(None)) as session:
+            result = session.process(text)
+            self.assertEqual(result.remaining, ())
+            return result, session.restore(result.text)
+
+    def test_password_beats_email(self):
+        # Review #1: the value is a password (C, never restored), not an email (S).
+        result, restored = self.process('pw=hong@example.com')
+        self.assertEqual(result.text, 'pw=[비밀번호_1]')
+        self.assertEqual(decide_grade(result.detection_types), Grade.confidential)
+        self.assertEqual(restored.blocked, ('[비밀번호_1]',))
+        # Connection URL: only the password part; the host stays.
+        result, _ = self.process('postgres://admin:s3cretpw@db.internal:5432/app')
+        self.assertEqual(result.text, 'postgres://admin:[비밀번호_1]@db.internal:5432/app')
+        self.assertEqual(result.detection_types, ('PASSWORD',))
+
+    def test_password_absorbs_rule_spans(self):
+        # Review #2: a phone inside the value is dropped; a partial overlap widens the password.
+        result, _ = self.process('비밀번호: abc010-1234-5678xyz')
+        self.assertEqual(result.text, '비밀번호: [비밀번호_1]')
+        result, _ = self.process('pw=abc010-1234 5678 끝')
+        self.assertEqual(result.text, 'pw=[비밀번호_1] 끝')
+        self.assertEqual(result.detection_types, ('PASSWORD',))
+
+    def test_password_with_hangul(self):
+        # Review #4: quoted -> everything inside; unquoted -> up to whitespace minus a particle.
+        cases = [
+            ('비밀번호: "한글암호123!"', '비밀번호: "[비밀번호_1]"'),
+            ('password="abc한글"', 'password="[비밀번호_1]"'),
+            ('비밀번호: abc한글', '비밀번호: [비밀번호_1]'),
+            ('비밀번호는 abc123입니다', '비밀번호는 [비밀번호_1]입니다'),
+            # Hangul before the particle: kept whole (the last syllable may be in the password).
+            ('비밀번호를 한글암호123!로 바꿨어', '비밀번호를 [비밀번호_1] 바꿨어'),
+            ('pw: 비밀123이', 'pw: [비밀번호_1]'),
+            ('pw=abc123)', 'pw=[비밀번호_1]'),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.process(text)[0].text, expected)
+
+    def test_password_reaching_into_numbers_is_widened(self):
+        # Codex re-review: a card/ID run past an unquoted password must not leak its tail.
+        for text in (f'pw={group4(VISA)}', f'pw={RRN[:6]} {RRN[6:]}'):
+            with self.subTest(text=text):
+                self.assertEqual(self.process(text)[0].text, 'pw=[비밀번호_1]')
+
+    def test_assignment_value_is_taken_whole(self):
+        # Codex re-review: 'pw=' is config syntax; no particle cut, no prose filter.
+        self.assertEqual(self.process('pw=비밀123이')[0].text, 'pw=[비밀번호_1]')
+        self.assertEqual(self.process('pw=8자리Secret!')[0].text, 'pw=[비밀번호_1]')
+
+    def test_particle_man_is_not_an_amount(self):
+        self.assertEqual(self.matched('신한 계좌 1002123456789만 사용해'), [('ACCOUNT', '1002123456789')])
+        self.assertEqual(self.matched('신한 거래 1002123456789만원'), [])
+
+    def test_single_quote_inside_double_quotes(self):
+        # Review #5
+        self.assertEqual(self.process('pw="ab\'cd123"')[0].text, 'pw="[비밀번호_1]"')
+
+    def test_card_followed_by_extra_digits(self):
+        # Review #6: the longest Luhn-valid run of groups wins.
+        text = f'카드 {group4(VISA)} 123'
+        self.assertEqual(self.matched(text), [('CARD', group4(VISA))])
+        # The order-number label before the whole digit run still excludes it.
+        self.assertEqual(self.matched(f'주문번호 123 {group4(VISA)}'), [])
+
+    def test_amount_and_common_words_are_not_accounts(self):
+        # Review #7
+        for text in ('우리 매출은 10000000000원입니다', '하나 더 1002123456789 주세요',
+                     '신한 거래 금액 1002123456789 원'):
+            with self.subTest(text=text):
+                self.assertEqual(self.matched(text), [])
+        self.assertEqual(self.matched('우리은행 1002-123-456789'), [('ACCOUNT', '1002-123-456789')])
+        self.assertEqual(self.matched('하나 계좌 1002123456789'), [('ACCOUNT', '1002123456789')])
+
+    def test_order_number_is_not_an_id(self):
+        # Review #8: negative context wins even with a valid checksum, unless an ID label precedes.
+        self.assertEqual(self.matched(f'주문번호 {dash_id(RRN)}'), [])
+        self.assertEqual(self.matched(f'접수 {dash_id(RRN)}'), [])
+        self.assertEqual(self.matched(f'주민번호(주문번호 {dash_id(RRN)})'), [('ID_NUMBER', dash_id(RRN))])
 
     def test_order_word_elsewhere_does_not_hide_card(self):
         self.assertEqual(self.matched(f'주문 완료, 카드 {VISA}'), [('CARD', VISA)])

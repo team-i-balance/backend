@@ -83,6 +83,29 @@ class SlmAdapterTests(unittest.TestCase):
         self.assertEqual(decide_grade(r.detection_types), Grade.sensitive)
         self.assertEqual(r.remaining, ())
 
+    def test_sensitive_rest_survives_rule_cut(self):
+        # Most of the SLM span is the phone, but the rest is a health fact: keep it as SENSITIVE (C).
+        text = '010-1234-5678 HIV 양성'
+        with LocalSession(detector_with([(text, 'SENSITIVE', 'P-SENS')])) as s:
+            r = s.process(text)
+        self.assertEqual(r.text, '[전화번호_1] [민감정보_1]')
+        self.assertEqual(decide_grade(r.detection_types), Grade.confidential)
+        self.assertEqual(r.remaining, ())
+
+    def test_label_only_leftover_is_dropped(self):
+        text = '주민번호 900101-1234568'
+        with LocalSession(detector_with([(text, 'SENSITIVE', 'P-SENS')])) as s:
+            r = s.process(text)
+        self.assertEqual(r.text, '주민번호 [식별번호_1]')
+        self.assertEqual(r.detection_types, ('ID_NUMBER',))
+        self.assertEqual(r.remaining, ())
+
+    def test_label_check_only_after_a_cut(self):
+        # Without a rule value inside, the SLM's own span is kept as it is.
+        text = '고객 연락처 메모'
+        det = detector_with([('연락처', 'CONFIDENTIAL', 'R01')])
+        self.assertEqual([s['type'] for s in det.detect(text)], ['CONFIDENTIAL'])
+
     def test_slm_span_mostly_outside_rule_value_is_kept(self):
         text = '거래처 다온물산 담당 010-1234-5678 번으로 계약 단가 15% 인하 통보'
         spans = [('다온물산 담당 010-1234-5678 번으로 계약 단가 15% 인하', 'CONFIDENTIAL', 'R05')]

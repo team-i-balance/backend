@@ -10,7 +10,7 @@ import json
 import re
 from pathlib import Path
 from .additional_rules import detect_additional
-from .kr_rules import kr_structured_detections
+from .kr_rules import kr_structured_detections, password_first
 from .preprocessing import normalize_for_detection, restore_detection_offsets
 
 _PHONE = re.compile(r'(?<![0-9])01[016789][ -]?[0-9]{3,4}[ -]?[0-9]{4}(?![0-9])')
@@ -89,8 +89,13 @@ _TYPES = {
 # (see Detector._add_slm_spans for the grade-C exception).
 _RULE_TYPES = frozenset({'PHONE', 'EMAIL', 'BUSINESS_NUMBER', 'API_KEY', 'ACCESS_TOKEN',
                          'ID_NUMBER', 'CARD', 'ACCOUNT', 'IP_ADDRESS', 'PASSWORD', 'DOB'})
-# Fraction of an SLM span that must remain after cutting out rule-engine spans for it to be kept.
-_SLM_KEEP_RATIO = 0.5
+# An SLM leftover made only of these field labels (plus particles) is dropped after the cut:
+# "주민번호 900101-…" flagged whole by the SLM must not mask the word "주민번호" on its own.
+_LABEL_ONLY = re.compile(
+    r'(?i)(?:(?:주민등록번호|주민번호|외국인등록번호|외국인번호|카드번호|카드|계좌번호|계좌|전화번호|전화|연락처|'
+    r'휴대폰|번호|ip|아이피|생년월일|생일|비밀번호|패스워드|pw|password|이메일|메일)'
+    r'(?:은|는|이|가|을|를|의|도|와|과|로|으로|에|에서|만)?)+')
+_LABEL_STRIP = re.compile(r'[\s\W_]+')
 # Left at SLM span edges after cutting around rule spans.
 _TRIM_CHARS = frozenset(' \t\r\n,.;:/·()[]')
 
@@ -190,7 +195,8 @@ class Detector:
                  for kind, pattern in (('PHONE', _PHONE), ('EMAIL', _EMAIL))
                  for m in pattern.finditer(text)]
         structured = _structured_detections(text)
-        found.extend(structured)
+        # A password value beats phone/email/number spans inside it (kr_rules.password_first).
+        found = password_first(text, found + structured)
         if not self.model_enabled or not text:
             return self._apply_policy(_merge_overlaps(found))
         try:
@@ -215,8 +221,9 @@ class Detector:
           birth dates) always keep their extent and type: checksums and formats are more
           reliable than the SLM, which tends to mislabel such numbers (e.g. a resident number
           as an address or a card number as an internal host). SLM spans are cut around them.
-        - An SLM span that was mostly such a value (less than _SLM_KEEP_RATIO left after the
-          cut) is dropped, so its leftover label words ("주민번호") do not get their own type.
+        - After the cut, leftovers that are only field labels (_LABEL_ONLY, "주민번호") are
+          dropped; any other leftover keeps the SLM type, so "010-… HIV 양성" keeps
+          "HIV 양성" as SENSITIVE (grade C).
         - Everything else (AEGIS and SLM spans) is merged by type priority (local_ai.slm.PRIORITY).
         """
         from .slm import resolve_overlaps, subtract
@@ -229,19 +236,17 @@ class Detector:
             # A span touching a placeholder is the SLM re-reading already-masked content.
             if any(p['start'] < span['end'] and span['start'] < p['end'] for p in placeholders):
                 continue
-            parts = []
-            for part in subtract(span, rules):
+            pieces = subtract(span, rules)
+            cut = len(pieces) != 1 or (pieces[0]['start'], pieces[0]['end']) != (span['start'], span['end'])
+            for part in pieces:
                 st, en = part['start'], part['end']
                 while st < en and text[st] in _TRIM_CHARS:
                     st += 1
                 while en > st and text[en - 1] in _TRIM_CHARS:
                     en -= 1
-                if en > st:
-                    parts.append({**part, 'start': st, 'end': en})
-            kept = sum(p['end'] - p['start'] for p in parts)
-            if kept < _SLM_KEEP_RATIO * (span['end'] - span['start']):
-                continue
-            slm.extend(parts)
+                # After a cut, a leftover that is only a field label is not content of its own.
+                if en > st and not (cut and _LABEL_ONLY.fullmatch(_LABEL_STRIP.sub('', text[st:en]))):
+                    slm.append({**part, 'start': st, 'end': en})
         return rules + resolve_overlaps(others + slm)
 
     def _model_detect(self, text: str) -> list[dict]:
