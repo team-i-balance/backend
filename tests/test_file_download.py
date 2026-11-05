@@ -101,6 +101,7 @@ def test_concurrent_download_requests_have_only_one_winner(api):
     async def run():
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=api.client.app), base_url="http://test",
+            headers={"Authorization": api.auth},
         ) as client:
             return await asyncio.gather(*[
                 client.get(f"/files/{work_id}/download") for _ in range(2)
@@ -143,7 +144,8 @@ def test_interrupted_transfer_stays_consumed_but_mapping_survives(api):
         path = f"/files/{work_id}/download"
         scope = dict(type="http", asgi={"version": "3.0"}, http_version="1.1",
                      method="GET", scheme="http", path=path, raw_path=path.encode(),
-                     query_string=b"", root_path="", headers=[],
+                     query_string=b"", root_path="",
+                     headers=[(b"authorization", api.auth.encode())],
                      client=("test", 1), server=("test", 80))
         with pytest.raises(RuntimeError, match="connection lost"):
             await api.client.app(scope, receive, send)
