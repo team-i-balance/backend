@@ -1,6 +1,7 @@
 """Issue #25: per-version ack counts, publish history, console types mapping."""
 from datetime import datetime, timezone
 
+from app.auth import token_label
 from local_ai.pseudonym import _TYPE_LABELS
 
 
@@ -11,7 +12,7 @@ def _payload(rules=0, types=None):
         "expires_at": "2999-01-01T00:00:00+00:00",
         "thresholds": {"confidential": 0.45, "personal": 0.35, "high_confidence": 0.7},
         "rules": [
-            {"id": f"r-{i}", "label": "고객ID", "description": "d", "grade": "S", "action": "대체"}
+            {"id": f"r-{i}", "label": f"고객ID{i}", "description": "d", "grade": "S", "action": "대체"}
             for i in range(rules)
         ],
     }
@@ -144,8 +145,10 @@ def test_history_newest_first_with_fields(client):
     assert [i["version"] for i in items] == [3, 2, 1]
     assert [i["rule_count"] for i in items] == [1, 2, 0]
     assert [i["sha256"] for i in items] == [p3["bundle_sha256"], p2["bundle_sha256"], p1["bundle_sha256"]]
+    principal = "security-dev:" + token_label(client.headers["Authorization"].split()[1])
     for item in items:
-        assert set(item) == {"version", "sha256", "stored_at", "rule_count"}
+        assert set(item) == {"version", "sha256", "stored_at", "rule_count", "published_by"}
+        assert item["published_by"] == principal  # #59: who published it
         at = datetime.fromisoformat(item["stored_at"])
         assert at.utcoffset() == timezone.utc.utcoffset(None)
     # sha256 (unquoted body value) matches the quoted RFC ETag header
@@ -167,14 +170,20 @@ def test_history_missing_stored_at_is_null(client):
         conn.execute("""INSERT INTO policy_bundle (version, envelope, sha256, stored_at)
                         VALUES (1, '{}', 'sha256:x', NULL)""")
     assert client.get("/policy/history").json() == [
-        {"version": 1, "sha256": "sha256:x", "stored_at": None, "rule_count": 0}
+        {"version": 1, "sha256": "sha256:x", "stored_at": None, "rule_count": 0, "published_by": None}
     ]
 
 
 def test_history_rule_count_non_list_rules_is_zero(client):
+    # The API refuses to sign it (the server could not apply it, #64) ...
     r = client.post("/policy/publish", json={"payload": {**_payload(), "rules": "x"}})
-    assert r.status_code == 200
-    assert client.get("/policy/history").json()[0]["rule_count"] == 0
+    assert r.status_code == 422 and r.json()["detail"] == "POLICY_COMPILE_FAILED"
+    assert client.get("/policy/history").json() == []
+    # ... and a store that skips the check still counts non-list rules as zero.
+    from app.policy import PolicyStore
+
+    store = PolicyStore(precheck=lambda active: None)
+    assert store.publish({**_payload(), "rules": "x"}).rule_count == 0
 
 
 # --- console types mapping ---------------------------------------------------

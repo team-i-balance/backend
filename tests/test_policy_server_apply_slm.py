@@ -34,3 +34,22 @@ def test_real_slm_takes_bundle_rules_and_survives_bad_ones():
     # A duplicate label is rejected by the SLM: the server keeps v1.
     bad = rules + [{"id": "r-2", "label": "고객 ID", "grade": "S"}]
     assert apply_policy_to_detector(det, policy(2, bad)) is applied
+
+
+@pytest.mark.skipif(not os.environ.get("LOCAL_SLM_MODEL_DIR"), reason="LOCAL_SLM_MODEL_DIR not set")
+def test_deploy_compile_check_matches_the_real_slm(monkeypatch):
+    """#64: the pre-activation check gives the loaded SLM's verdict, with or without the model."""
+    from app import detectors
+    from app.policy_apply import check_policy
+
+    ok = [{"id": "r-1", "label": "고객 ID", "grade": "C"}]
+    cases = {
+        "ok": ok,
+        "duplicate_label": ok + [{"id": "r-2", "label": "고객 ID", "grade": "S"}],
+        "fixed_label": [{"id": "r-1", "label": "사람 이름", "grade": "S"}],
+    }
+    expected = {"ok": None, "duplicate_label": "rule_label_conflict", "fixed_label": "rule_label_conflict"}
+    monkeypatch.delitem(detectors._detectors, False, raising=False)
+    assert {k: check_policy(policy(1, r)) for k, r in cases.items()} == expected  # model not loaded
+    monkeypatch.setitem(detectors._detectors, False, Detector(None, slm_dir=os.environ["LOCAL_SLM_MODEL_DIR"]))
+    assert {k: check_policy(policy(1, r)) for k, r in cases.items()} == expected  # the running SLM

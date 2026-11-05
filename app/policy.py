@@ -27,6 +27,11 @@ Configuration (env):
   POLICY_ORG              this device/org id (default "acme")
   POLICY_EXPECTED_MODEL_SHA256  installed model hash; if unset, model check is
                           skipped (hackathon convenience)
+  POLICY_KEY_ID           keyid of the server's signing key (default "console-demo").
+                          Files: <keys>/<keyid>.key and <keys>/trust/<keyid>.pub. To
+                          rename, COPY both files to the new name and keep
+                          trust/console-demo.pub so bundles signed earlier still
+                          verify (they carry the old keyid). See docs/policy-persistence.md.
 """
 from __future__ import annotations
 
@@ -35,6 +40,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import tempfile
 import threading
 from dataclasses import asdict, dataclass, field
@@ -61,8 +67,22 @@ KEYS_DIR = Path(os.getenv("POLICY_KEYS_DIR", BASE_DIR / "keys"))
 POLICY_DB_PATH = Path(os.getenv("POLICY_DB_PATH", BASE_DIR / "data" / "policy.db"))
 # Trusted public keys are trust/<keyid>.pub under the keys dir (MDM-installed).
 TRUST_DIR = KEYS_DIR / "trust"
-# Temporary signing key for local/demo publishing (console/KMS holds it in prod).
-DEMO_KEY_ID = "console-demo"
+# Signing key for publishing (console/KMS holds it in prod). The keyid only names the
+# key files and the signature entry; verification always uses trust/<keyid>.pub.
+DEFAULT_KEY_ID = "console-demo"
+KEY_ID_ENV = "POLICY_KEY_ID"
+_KEY_ID_FORMAT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _configured_key_id() -> str:
+    keyid = os.getenv(KEY_ID_ENV, "").strip() or DEFAULT_KEY_ID
+    if not _KEY_ID_FORMAT.match(keyid):
+        # It becomes a file name: fail loudly rather than sign under a surprising name.
+        raise RuntimeError(f"{KEY_ID_ENV} must be 1-64 of A-Z a-z 0-9 . _ - (not starting with . _ -)")
+    return keyid
+
+
+DEMO_KEY_ID = _configured_key_id()  # name kept for existing imports
 PRIV_KEY_PATH = KEYS_DIR / f"{DEMO_KEY_ID}.key"
 _KEY_LOCK = threading.Lock()
 
@@ -391,6 +411,8 @@ class ActivePolicy:
     # before these fields existed loadable.
     dict: list = field(default_factory=list)
     exclude: list = field(default_factory=list)
+    # Who activated it (security principal, #59). None for rows stored before.
+    activated_by: Optional[str] = None
 
 
 def _hash_list(value) -> list:
@@ -398,6 +420,20 @@ def _hash_list(value) -> list:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
+
+
+def _candidate(payload: dict) -> ActivePolicy:
+    """The ActivePolicy a payload would become, for the compile check before signing."""
+    rules = payload.get("rules", [])
+    types, thresholds = payload.get("types") or {}, payload.get("thresholds") or {}
+    return ActivePolicy(
+        org=payload.get("org"), version=payload.get("version"), keyid=None,
+        rule_count=len(rules) if isinstance(rules, list) else 0, rules=rules,
+        types=types if isinstance(types, dict) else {},
+        thresholds=thresholds if isinstance(thresholds, dict) else {},
+        expires_at=payload.get("expires_at"), activated_at="", bundle_sha256="",
+        dict=_hash_list(payload.get("dict")), exclude=_hash_list(payload.get("exclude")),
+    )
 
 
 def bundle_hash(bundle: dict) -> str:
@@ -415,6 +451,8 @@ class StoredBundle:
     # without one (older/imported data) is reported as null, not invented.
     stored_at: Optional[str]
     rule_count: int = 0
+    # Security principal that published it (#59); None for bundles stored before.
+    published_by: Optional[str] = None
 
 
 class PolicyStore:
@@ -424,9 +462,20 @@ class PolicyStore:
     store here for the hackathon; in production they are separate services.
     """
 
-    def __init__(self, verifier: Optional[DsseVerifier] = None, *, db_path: Path | str | None = None):
+    def __init__(self, verifier: Optional[DsseVerifier] = None, *, db_path: Path | str | None = None,
+                 precheck=None):
         self._verifier = verifier or DsseVerifier()
         self._db = PolicyDatabase(db_path)
+        # (ActivePolicy) -> None or an error code. Compiles the policy the way the
+        # server detectors will (#64); injectable for tests.
+        self._precheck = precheck
+
+    def _compile_error(self, active: ActivePolicy) -> Optional[str]:
+        if self._precheck is not None:
+            return self._precheck(active)
+        from app.policy_apply import check_policy
+
+        return check_policy(active)
 
     def initialize(self) -> None:
         self._db.initialize()
@@ -455,6 +504,7 @@ class PolicyStore:
         return StoredBundle(
             version=row["version"], envelope=json.loads(row["envelope"]),
             sha256=row["sha256"], stored_at=row["stored_at"], rule_count=row["rule_count"],
+            published_by=row["published_by"],
         )
 
     @staticmethod
@@ -475,12 +525,13 @@ class PolicyStore:
         return _sign_bundle(payload, private_key, keyid=DEMO_KEY_ID, payload_type=payload_type)
 
     # --- PC-side: verify + apply --------------------------------------------
-    def deploy(self, bundle: dict) -> tuple[bool, str]:
-        """Verify and (if valid + newer) activate. Returns (accepted, reason).
+    def deploy(self, bundle: dict, *, by: Optional[str] = None) -> tuple[bool, str]:
+        """Verify, compile, and (if valid + newer) activate. Returns (accepted, reason).
 
         On failure the current policy is kept and the reason is the spec code
         (bad_type/bad_signature/unsupported_schema/wrong_org/rollback/expired/
-        model_mismatch).
+        model_mismatch), or compile_failed when the server could not apply it
+        (e.g. duplicate rule labels or a fixed SLM label, #64).
         """
         with self._db.transaction(write=True) as conn:
             active = self._current(conn)
@@ -504,7 +555,12 @@ class PolicyStore:
                 bundle_sha256=bundle_hash(bundle),
                 dict=_hash_list(verified.payload.get("dict")),
                 exclude=_hash_list(verified.payload.get("exclude")),
+                activated_by=by,
             )
+            # Activate only what the server can actually apply; otherwise detection
+            # would silently keep the previous policy while this one looks active.
+            if self._compile_error(active) is not None:
+                return False, "compile_failed"
             conn.execute(
                 """INSERT INTO policy_active (singleton, version, data) VALUES (1, ?, ?)
                    ON CONFLICT(singleton) DO UPDATE SET version=excluded.version, data=excluded.data""",
@@ -532,7 +588,8 @@ class PolicyStore:
             return save_draft(conn, payload, changes, if_match=if_match, editor=editor,
                               console_state=console_state)
 
-    def publish(self, payload: Optional[dict] = None, *, signer=None, if_match: str | None = None) -> StoredBundle:
+    def publish(self, payload: Optional[dict] = None, *, signer=None, if_match: str | None = None,
+                by: Optional[str] = None) -> StoredBundle:
         """Sign a payload into a DSSE bundle, bump version, and store it.
 
         The version is allocated above both published and applied versions;
@@ -554,6 +611,9 @@ class PolicyStore:
             reject_unsignable(payload)
             version = self._next_version(conn)
             payload = {**payload, "version": version}
+            # Never sign a bundle the server itself could not apply (#64).
+            if self._compile_error(_candidate(payload)) is not None:
+                raise DraftError(422, "POLICY_COMPILE_FAILED")
             envelope = signer(payload) if signer else self._sign(conn, payload, POLICY_PAYLOAD_TYPE)
             rules = payload.get("rules")
             stored = StoredBundle(
@@ -562,12 +622,13 @@ class PolicyStore:
                 sha256=bundle_hash(envelope),
                 stored_at=datetime.now(timezone.utc).isoformat(),
                 rule_count=len(rules) if isinstance(rules, list) else 0,
+                published_by=by,
             )
             conn.execute(
-                """INSERT INTO policy_bundle (version, envelope, sha256, stored_at, rule_count)
-                   VALUES (?, ?, ?, ?, ?)""",
+                """INSERT INTO policy_bundle (version, envelope, sha256, stored_at, rule_count, published_by)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (stored.version, json.dumps(stored.envelope, ensure_ascii=False),
-                 stored.sha256, stored.stored_at, stored.rule_count),
+                 stored.sha256, stored.stored_at, stored.rule_count, stored.published_by),
             )
             # Same transaction as the signed bundle: failure leaves the draft intact.
             # policy_console_state is deliberately kept for the console's reload.

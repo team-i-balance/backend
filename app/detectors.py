@@ -45,6 +45,12 @@ def get_detector(rules_only: bool = False):
         return _detectors[rules_only]
 
 
+def cached_detector(rules_only: bool = False):
+    """The detector already built for this mode, or None. Never loads or waits."""
+    with _lock:
+        return _detectors.get(rules_only)
+
+
 def detection_status() -> dict:
     """What full detection covers on this server, without loading anything.
 

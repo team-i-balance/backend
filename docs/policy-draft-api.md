@@ -23,14 +23,14 @@ GET /policy/draft
     "exclude": []
   },
   "changes": [
-    {"what": "이름 변환 방식 변경", "src": "직접 수정", "at": "2026-11-05T09:00:00+00:00", "by": "unauthenticated"}
+    {"what": "이름 변환 방식 변경", "src": "직접 수정", "at": "2026-11-05T09:00:00+00:00", "by": "security:e158f9b3bd70"}
   ],
   "console_state": {"dict": [{"word": "프로젝트-오로라", "type": "회사 고유 단어"}], "exclude": [{"value": "..."}]},
   "has_draft": true,
   "base_version": 1,
   "revision": 2,
   "updated_at": "2026-11-05T09:00:00+00:00",
-  "updated_by": "unauthenticated",
+  "updated_by": "security:e158f9b3bd70",
   "etag": "\"sha256:...\""
 }
 ```
@@ -92,9 +92,11 @@ dict, exclude`와 추가 필드를 그대로 보존합니다. 서버가 UI 상�
 현재 서버 UTC 시각·처리자를 기록합니다. `changes`는 미배포 변경 설명 목록이며 불변 감사
 이력이 아닙니다. 발행 성공 시 비워집니다. 사건 판단 이력은 기존 `/cases`에 남습니다.
 
-현재 인증이 없으므로 `by`와 `updated_by`는 `unauthenticated`입니다. 인증 이슈 #10에서
-`get_policy_editor()`를 검증된 보안팀 계정으로 교체하고 정책 API에 권한 검사를 연결해야 합니다.
-클라이언트가 보낸 `by`로 실제 사용자를 식별하지 않습니다.
+`by`와 `updated_by`는 요청한 security 토큰의 주체입니다(#59). 사건 종결(`/cases/{id}/close`)과 같은
+`security:<토큰 SHA-256 앞 12자리>` 형식이고, `/auth/dev-token`으로 받은 토큰은 `security-dev:…`입니다.
+원래 토큰은 저장하지 않습니다. 이 변경 전에 저장된 변경 항목은 `unauthenticated`로 남아 있습니다.
+클라이언트가 보낸 `by`로 실제 사용자를 식별하지 않습니다. 발행한 주체는 `/policy/history`의
+`published_by`, 서버에 활성화한 주체는 `/policy/current`의 `activated_by`에 남습니다.
 
 | 응답 | 의미와 처리 |
 | --- | --- |
@@ -117,7 +119,9 @@ If-Match: "sha256:마지막 저장에서 받은 값"
 서명하지 않고 그대로 남깁니다. 발행 버전은
 기존 방식대로 서버가 정합니다. 응답은 기존 `{version, keyid, bundle_sha256}` 형태입니다.
 **서명 번들 저장과 초안 삭제를 하나의 트랜잭션**으로 처리하므로 서명·DB 실패 시 초안과
-이전 발행 상태가 남습니다. PC 적용은 계속 별도의 `/policy/deploy` 단계입니다.
+이전 발행 상태가 남습니다. 서버 적용은 계속 별도의 `/policy/deploy`(security) 단계입니다.
+서버가 적용할 수 없는 payload(규칙 label·id 중복, 고정 SLM 라벨 재사용 등)는 서명하지 않고
+422 `POLICY_COMPILE_FAILED`로 거절합니다([정책 적용 문서](policy-apply.md#배포-전-컴파일-확인과-적용-상태-64)).
 
 - 본문이 있든 없든 발행할 payload 최상위에 `console` 또는 `console_state` 키가 있으면
   `422 POLICY_PAYLOAD_CONSOLE_FORBIDDEN`이며, 버전·번들·초안 모두 바뀌지 않습니다.

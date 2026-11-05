@@ -1,8 +1,11 @@
 """/policy endpoints (S7).
 
-PC side:
-  POST /policy/deploy          verify a DSSE bundle; apply if valid + newer
-  GET  /policy/current         active policy metadata
+Server detection (security token):
+  POST /policy/deploy          verify + compile a DSSE bundle; activate if valid + newer
+
+Read (api token; the employee program uses it as its token check):
+  GET  /policy/current         active policy metadata, the version detection actually
+                               uses, the last apply error code, hmac key presence
 
 Backend (console) side:
   POST /policy/publish         sign a payload into a bundle, version+1, store
@@ -21,12 +24,13 @@ Model manifest:
 """
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel
 
-from app.auth import require_api, require_security
+from app.auth import require_api, require_security, security_principal
 from app.etag import if_none_match_hits, quote_etag
 from app.policy import (
     ActivePolicy,
@@ -52,12 +56,39 @@ router = APIRouter(prefix="/policy", tags=["policy"])
 
 class HistoryItem(BaseModel):
     """One published bundle. stored_at is the server's UTC ISO store time;
-    null if the bundle was stored without one (never invented)."""
+    null if the bundle was stored without one (never invented). published_by is the
+    security principal that published it; null for bundles stored before #59."""
 
     version: int
     sha256: str
     stored_at: Optional[str] = None
     rule_count: int
+    published_by: Optional[str] = None
+
+
+class ApplyError(BaseModel):
+    """Most recent failure to apply a policy on this server process (code only)."""
+
+    version: Optional[int] = None
+    code: str
+    at: str
+
+
+class PolicyCurrent(PolicyInfo):
+    """PolicyInfo plus what detection actually runs with (#64) and config checks (#65)."""
+
+    activated_by: Optional[str] = None
+    # Version requests detect with. Differs from ``version`` when the active policy
+    # failed to apply and the previous one stays in effect (null: no policy in effect).
+    effective_version: Optional[int] = None
+    last_apply_error: Optional[ApplyError] = None
+    # Per detector mode ("full", "rules_only"): they apply the policy separately and only
+    # the full one runs the SLM check. The two fields above are the full detector's, or the
+    # rules-only detector's when this server has no model. "full" null: no full detector.
+    effective_versions: dict[str, Optional[int]] = {}
+    last_apply_errors: dict[str, Optional[ApplyError]] = {}
+    # POLICY_VALUE_HASH_KEY is set: "hmac:" dict/exclude entries apply (else skipped).
+    value_hash_key_set: bool = False
 
 
 class VersionAcks(BaseModel):
@@ -84,22 +115,31 @@ def _info(active: ActivePolicy | None) -> PolicyInfo:
     )
 
 
-# --- PC side ----------------------------------------------------------------
-@router.post("/deploy", response_model=DeployOut, dependencies=[Depends(require_api)])
-def deploy(body: DeployIn):
-    accepted, reason = store.deploy(body.bundle)
+# --- Backend / console side -------------------------------------------------
+def get_policy_editor(principal: str = Depends(security_principal)) -> str:
+    """Who changes policy: the verified security principal, as in case history (#59)."""
+    return principal
+
+
+# --- server detection --------------------------------------------------------
+@router.post("/deploy", response_model=DeployOut, dependencies=[Depends(require_security)])
+def deploy(body: DeployIn, editor: str = Depends(get_policy_editor)):
+    # Security only (#65): activating changes what the server detects for everyone.
+    accepted, reason = store.deploy(body.bundle, by=editor)
     return DeployOut(accepted=accepted, reason=reason, policy=_info(store.current()))
 
 
-@router.get("/current", response_model=PolicyInfo, dependencies=[Depends(require_api)])
+@router.get("/current", response_model=PolicyCurrent, dependencies=[Depends(require_api)])
 def current():
-    return _info(store.current())
+    from app.policy_apply import VALUE_HASH_KEY_ENV, runtime_status
 
-
-# --- Backend / console side -------------------------------------------------
-def get_policy_editor() -> str:
-    """Replace with the verified security-team account when authentication (#10) lands."""
-    return "unauthenticated"
+    active = store.current()
+    return PolicyCurrent(
+        **_info(active).model_dump(),
+        activated_by=active.activated_by if active else None,
+        **runtime_status(active),
+        value_hash_key_set=bool(os.getenv(VALUE_HASH_KEY_ENV)),
+    )
 
 
 def _draft_error(exc: DraftError) -> HTTPException:
@@ -140,9 +180,10 @@ def publish(
     response: Response,
     body: Optional[PublishIn] = None,
     if_match: Optional[str] = Header(default=None, max_length=128),
+    editor: str = Depends(get_policy_editor),
 ):
     try:
-        stored = store.publish(body.payload if body else None, if_match=if_match)
+        stored = store.publish(body.payload if body else None, if_match=if_match, by=editor)
     except DraftError as exc:
         raise _draft_error(exc) from exc
     except SigningKeyError as exc:
@@ -184,6 +225,7 @@ def history():
             sha256=s.sha256,
             stored_at=s.stored_at,
             rule_count=s.rule_count,
+            published_by=s.published_by,
         )
         for s in store.history()
     ]

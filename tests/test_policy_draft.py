@@ -9,6 +9,7 @@ from threading import Barrier
 
 import pytest
 
+from app.auth import token_label
 from tests.test_policy_persistence import MODEL, run_python
 
 
@@ -92,7 +93,9 @@ def test_metadata_is_server_owned_and_survives_other_editors(client):
     saved = save(client, changes=[{"what": "  유형 변경  ", "at": "forged", "by": "admin"}])
     change = saved["changes"][0]
     assert change["what"] == "유형 변경" and change["src"] == "직접 수정"
-    assert change["by"] == saved["updated_by"] == "unauthenticated"
+    # #59: the verified security principal, as in case history (never the raw token).
+    principal = "security-dev:" + token_label(client.headers["Authorization"].split()[1])
+    assert change["by"] == saved["updated_by"] == principal
     assert start <= datetime.fromisoformat(change["at"]) <= datetime.now(timezone.utc)
 
     client.app.dependency_overrides[get_policy_editor] = lambda: "security-2"
