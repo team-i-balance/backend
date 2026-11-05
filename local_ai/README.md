@@ -34,6 +34,10 @@ printf '문의는 user@example.com\n' | python -m local_ai --rules-only
 - macOS ARM64, 2스레드의 별도 단일 실행에서 탐지와 재검사를 포함한 약 1,019자 455ms, 10,019자 4,705ms를 기록했다. 합성 반복 텍스트이며 실제 장비의 성능을 보장하지 않는다. 두 측정까지 누적 최대 RSS는 약 450MiB였다.
 - 데스크톱 앱 연결, 실제 기기에서의 장기 자원 측정, OS 수준 네트워크 차단 검증은 미완료다. 가명화한 텍스트에도 민감한 내용이 남을 수 있다.
 
+## 외부 연결 없음
+
+탐지 중에는 외부로 연결하지 않는다. `local_ai/detector.py`는 onnxruntime을 import하기 전에 `ORT_DISABLE_TELEMETRY=1`을, `local_ai/slm`은 gliner·transformers·huggingface_hub를 import하기 전에 `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_HUB_DISABLE_TELEMETRY=1`을 기본값으로 설정한다(이미 지정한 값은 덮어쓰지 않는다). onnxruntime 1.31(Linux)은 `disable_telemetry_events()`만으로는 추론 중 `mobile.events.data.microsoft.com:443`에 연결을 시도하므로 환경변수가 필요하다(#13). 서버에서는 `ibalance-backend.service`에도 같은 값을 둔다. 검증은 `strace -f -e trace=connect -o /tmp/connect.log <서버 또는 탐지 명령>`으로 모델 로드와 추론을 실행한 뒤 로그에 루프백·유닉스 소켓 외의 `connect`가 없는지 확인한다. 라이브러리 버전이 바뀌어도 막히도록 배포 서버는 아웃바운드 방화벽(보안 그룹·nftables 등)으로 필요한 목적지 외의 송신을 차단할 것을 권장한다.
+
 ## 추가 탐지와 복원
 
 사업자번호는 하이픈 형태와 검증 숫자를 확인한다. 하이픈 없는 10자리 번호는 앞쪽 같은 줄의 사업자번호 문맥도 필요하다. 검증 숫자는 실제 사업자 등록 여부를 뜻하지 않는다. API 키는 `api_key` 대입, `access_token` 대입, `Authorization: Bearer` 값과 `sk-`, `sk-proj-`, `ghp_`로 시작하는 일부 형식을 검사한다. 그 밖의 키 형식이나 동적인 코드 표현은 탐지하지 못할 수 있다.

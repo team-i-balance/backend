@@ -6,6 +6,13 @@ never silently downgraded to rules-only results.
 """
 from __future__ import annotations
 
+import os
+
+# onnxruntime (1.31, Linux) still connects to Microsoft 1DS telemetry during inference unless this
+# is set before onnxruntime is imported; disable_telemetry_events() alone is not enough (#13).
+# setdefault keeps a value the operator set explicitly.
+os.environ.setdefault('ORT_DISABLE_TELEMETRY', '1')
+
 import json
 import re
 from pathlib import Path
