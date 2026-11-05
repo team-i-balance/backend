@@ -30,7 +30,9 @@ def test_empty_server_shape(client):
     body, _ = snapshot(client)
     assert body["events"]["last_id"] is None
     assert body["cases"] == {"last_id": None}
-    assert body["false_positives"] == {"last_id": None}
+    assert body["false_positives"]["last_id"] is None
+    assert body["false_positives"]["reports"] == body["events"]
+    assert body["policy"]["ack_last_id"] is None
     assert body["policy"]["latest"] is None and body["policy"]["active"] is None
     assert body["policy"]["draft_etag"] == client.get("/policy/draft").json()["etag"]
 
@@ -54,34 +56,73 @@ def test_new_event_moves_events_only(client):
     second = event(client, test=True)  # test events count too (console may show them)
     after = changes(client, etag).json()
     assert after["events"]["last_id"] == second["id"] > first["id"]
-    for area in ("cases", "false_positives", "policy"):
+    for area in ("cases", "policy"):
         assert after[area] == before[area]
+    assert after["false_positives"]["last_id"] == before["false_positives"]["last_id"]
 
 
-def test_reason_submit_and_re_request_move_reason_rev(client):
+def test_reason_submit_and_re_request_move_change_seq(client):
     raw = event(client, reason=None)
     before, etag = snapshot(client)
     assert client.post(f"/events/{raw['id']}/reason-request").status_code == 200
     requested = changes(client, etag).json()
-    assert requested["events"]["reason_rev"] != before["events"]["reason_rev"]
+    assert requested["events"]["change_seq"] > before["events"]["change_seq"]
     assert requested["events"]["last_id"] == before["events"]["last_id"]
 
     etag = f'"changes:{requested["rev"]}"'
     assert client.post(f"/events/{raw['id']}/reason",
                        json={"reason": "business_need", "text": "업무상 필요"}).status_code == 200
     submitted = changes(client, etag).json()
-    assert submitted["events"]["reason_rev"] != requested["events"]["reason_rev"]
+    assert submitted["events"]["change_seq"] > requested["events"]["change_seq"]
 
 
-def test_reason_count_catches_submission_older_than_latest_time(client):
-    # A client-supplied future created_at must not hide a later real submission.
-    future = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat()
-    event(client, reason="business_need", action="revert_original", created_at=future)
+def test_re_request_is_seen_even_if_another_row_has_a_later_time(client):
+    # A future reason_requested_at on another row (migrated data, clock fix) must not
+    # hide a real re-request: the marker is a sequence, not a timestamp.
+    import sqlite3
+    from app.db import DB_PATH
+    other = event(client, reason=None)
     raw = event(client, reason=None)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE event_log SET reason_requested_at = '2999-01-01T00:00:00+00:00' WHERE id = ?",
+                     (other["id"],))
     before, etag = snapshot(client)
+    assert client.post(f"/events/{raw['id']}/reason-request").status_code == 200
+    assert changes(client, etag).json()["events"]["change_seq"] > before["events"]["change_seq"]
+
+
+def test_new_report_moves_false_positive_area(client):
+    # Reports live in event_log: a late reason that turns an event into a report
+    # must change the false_positives area, not only events.
+    raw = event(client, reason=None, items=[{"type": "NAME", "decision": "raw", "value_hash": H1}])
+    before, etag = snapshot(client)
+    event(client, action="revert_original", reason="false_positive",
+          items=[{"type": "NAME", "decision": "reverted", "value_hash": H1}])
+    after = changes(client, etag).json()
+    assert after["false_positives"] != before["false_positives"]
+    etag = f'"changes:{after["rev"]}"'
     assert client.post(f"/events/{raw['id']}/reason",
-                       json={"reason": "business_need", "text": "사유"}).status_code == 200
-    assert changes(client, etag).json()["events"]["reason_rev"] != before["events"]["reason_rev"]
+                       json={"reason": "false_positive", "text": "오탐"}).status_code == 200
+    assert changes(client, etag).json()["false_positives"]["reports"]["change_seq"] > after["false_positives"]["reports"]["change_seq"]
+
+
+def test_policy_ack_moves_policy(client):
+    published = client.post("/policy/publish", json={"payload": {"schema": 1, "org": "acme"}},
+                             headers={"If-Match": client.get("/policy/draft").json()["etag"]})
+    assert published.status_code == 200, published.text
+    before, etag = snapshot(client)
+    ack = client.post("/policy/ack", json={"device_id": "pc-1", "version": published.json()["version"],
+                                           "status": "applied"})
+    assert ack.status_code in (200, 201), ack.text
+    after = changes(client, etag).json()["policy"]
+    assert after["ack_last_id"] is not None and after["ack_last_id"] != before["policy"]["ack_last_id"]
+
+
+def test_change_seq_is_internal(client):
+    ev = event(client, reason=None)
+    client.post(f"/events/{ev['id']}/reason-request")
+    assert "change_seq" not in client.get("/logs/events").json()[0]
+    assert "change_seq" not in client.post(f"/events/{ev['id']}/reason-request").json()
 
 
 def test_case_close_and_reopen_move_cases(client):
@@ -145,9 +186,9 @@ def test_security_scope_required(anon_client):
     assert anon_client.get("/logs/changes", headers={"Authorization": f"Bearer {sec}"}).status_code == 200
 
 
-def test_reason_indexes_exist(client):
+def test_change_seq_index_exists(client):
     import sqlite3
     from app.db import DB_PATH
     with sqlite3.connect(DB_PATH) as conn:
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
-    assert {"idx_event_reason_at", "idx_event_reason_requested_at"} <= names
+    assert "idx_event_change_seq" in names

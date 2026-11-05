@@ -23,6 +23,7 @@ def _row_to_dict(row) -> dict:
     d["restored"] = bool(d["restored"])
     d["items"] = json.loads(d.get("items") or "[]")
     d["test"] = bool(d.pop("is_test", 0))
+    d.pop("change_seq", None)  # internal polling marker, never returned or exported
     return d
 
 

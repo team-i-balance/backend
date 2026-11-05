@@ -47,6 +47,7 @@ def _case(row) -> dict:
     event["restored"] = bool(event["restored"])
     # Same field name as /logs/events (EventOut.test); test events never become cases.
     event["test"] = bool(event.pop("is_test", 0))
+    event.pop("change_seq", None)  # internal polling marker (app/changes.py)
     closed = row["review_operation"] == "close"
     return {
         "id": f"INC-{event['id']}",
