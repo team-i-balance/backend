@@ -57,4 +57,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    # Detection coverage lets clients tell full checks from rules-only before sending text.
+    from app.detectors import detection_status
+
+    return {"status": "ok", **detection_status()}
