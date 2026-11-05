@@ -84,6 +84,14 @@ class SlmSpanDetector:
         The model returns labels, so each label must map to exactly one rule: a duplicate
         label (or one reusing a fixed label) would silently re-grade detections.
         """
+        self.rules, self.label2id = self.rules_view(rules)
+
+    def rules_view(self, rules: list[dict]) -> tuple[dict, dict]:
+        """Validated (rules by id, label -> id) for ``rules`` plus the fixed labels.
+
+        Pass it to ``detect(text, view=...)`` to use other rules for one call without
+        changing this shared detector (the server's per-request policy, #47).
+        """
         all_rules = list(self.fixed) + list(rules)
         label2id: dict[str, str] = {}
         ids: set[str] = set()
@@ -92,11 +100,10 @@ class SlmSpanDetector:
                 raise ValueError("policy rule labels and ids must be unique and not reuse fixed labels")
             label2id[r["label"]] = r["id"]
             ids.add(r["id"])
-        self.rules = {r["id"]: r for r in all_rules}
-        self.label2id = label2id
+        return {r["id"]: r for r in all_rules}, label2id
 
-    def _type(self, rule_id: str) -> str:
-        return FIXED_TYPES.get(rule_id) or RULE_TYPES[self.rules[rule_id]["grade"]]
+    def _type(self, rule_id: str, rules: dict | None = None) -> str:
+        return FIXED_TYPES.get(rule_id) or RULE_TYPES[(self.rules if rules is None else rules)[rule_id]["grade"]]
 
     def _chunks(self, text: str):
         pieces, pos = [], 0
@@ -130,17 +137,18 @@ class SlmSpanDetector:
                 break
         return out
 
-    def detect(self, text: str) -> list[dict]:
-        """Non-overlapping spans: {start, end, type, rule_id, score}."""
+    def detect(self, text: str, view: tuple[dict, dict] | None = None) -> list[dict]:
+        """Non-overlapping spans: {start, end, type, rule_id, score}. ``view``: see rules_view."""
+        rules, label2id = view or (self.rules, self.label2id)
         if _GENERATOR.match(text):
             return []
         raw = []
         low = min(self.thresholds.values())
         for off, chunk in self._chunks(text):
-            for e in self.model.predict_entities(chunk, list(self.label2id), threshold=low,
+            for e in self.model.predict_entities(chunk, list(label2id), threshold=low,
                                                  flat_ner=False, multi_label=True):
-                rid = self.label2id[e["label"]]
-                kind = self._type(rid)
+                rid = label2id[e["label"]]
+                kind = self._type(rid, rules)
                 if kind == "NAME" and e["text"].strip().lower() in _NAME_HEADERS:
                     continue
                 if e["score"] >= self.thresholds[kind]:

@@ -19,6 +19,7 @@ from pathlib import Path
 from .additional_rules import detect_additional
 from .kr_rules import kr_structured_detections, password_first
 from .preprocessing import normalize_for_detection, restore_detection_offsets
+from .pseudonym import POLICY_TOKEN
 
 _PHONE = re.compile(r'(?<![0-9])01[016789][ -]?[0-9]{3,4}[ -]?[0-9]{4}(?![0-9])')
 _EMAIL = re.compile(r'(?i)(?<![\w.+-])[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![a-z0-9-])')
@@ -35,7 +36,8 @@ _CREDENTIAL = re.compile(
 )
 _BEARER = re.compile(r'(?i)\bauthorization\b[\"\']?\s*[:=]\s*[\"\']?bearer\s+(?P<value>[^\s\"\'\[\],;{}]+)')
 _PROVIDER_API_KEY = re.compile(r'(?<![A-Za-z0-9_])(?:sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,})(?![A-Za-z0-9_-])')
-_PLACEHOLDER = re.compile(r'\[[^\[\]\r\n]+_\d+\]')
+# Pseudonym placeholders, plus the fixed 태그/삭제 outputs of a policy method (#47).
+_PLACEHOLDER = re.compile(r'\[[^\[\]\r\n]+_\d+\]|' + POLICY_TOKEN.pattern)
 
 
 def _valid_business_number(value: str) -> bool:
@@ -197,6 +199,8 @@ class Detector:
         # Detection types turned off by the active policy (types on/off). Empty
         # by default, so behaviour is unchanged until a policy disables a type.
         self._disabled_types: frozenset[str] = frozenset()
+        # Optional (text, spans) -> spans hook for the rest of the policy (app/policy_apply.py).
+        self._span_policy = None
         self._tokenizer = self._session = self._np = None
         self._labels: dict[str, str] = {}
         self._slm = None
@@ -240,33 +244,50 @@ class Detector:
         except Exception as exc:
             raise DetectionError('Failed to load the local detection model') from exc
 
-    def set_policy(self, *, disabled_types=None) -> None:
-        """Apply active-policy toggles. Currently supports turning detection
-        types off (policy ``types`` on/off). Unknown types are ignored. Passing
-        None/empty restores default behaviour."""
+    def set_policy(self, *, disabled_types=None, span_policy=None) -> None:
+        """Apply active-policy toggles. ``disabled_types`` turns detection types
+        off (policy ``types`` on/off; unknown types are ignored). ``span_policy``
+        is called as ``span_policy(text, spans)`` on the final spans and returns
+        the spans to use (company words, exclusions, methods). Passing None/empty
+        restores default behaviour."""
         self._disabled_types = frozenset(disabled_types or ())
+        self._span_policy = span_policy
 
-    def _apply_policy(self, spans: list[dict]) -> list[dict]:
-        if not self._disabled_types:
+    def _apply_policy(self, spans: list[dict], disabled=None) -> list[dict]:
+        disabled = self._disabled_types if disabled is None else disabled
+        if not disabled:
             return spans
-        return [s for s in spans if s['type'] not in self._disabled_types]
+        return [s for s in spans if s['type'] not in disabled]
 
-    def detect(self, text: str) -> list[dict]:
+    def detect(self, text: str, policy=None) -> list[dict]:
+        """Spans for ``text``.
+
+        ``policy`` (app/policy_apply.ServerPolicy, or anything with ``disabled_types``,
+        ``slm_view`` and ``has_span_policy`` that is callable as ``policy(text, spans)``)
+        is used for this call only, instead of the state from set_policy, so requests
+        sharing this detector never mix policies (#47).
+        """
         if not isinstance(text, str):
             raise TypeError('text must be a string')
-        found = self._detect_raw(text)
+        if policy is None:
+            disabled, span_policy, view = self._disabled_types, self._span_policy, None
+        else:
+            disabled = frozenset(policy.disabled_types)
+            span_policy = policy if policy.has_span_policy else None
+            view = policy.slm_view
+        found = self._detect_raw(text, disabled, view)
         normalized, offsets = normalize_for_detection(text)
-        if normalized == text:
-            return found
-        try:
-            normalized_spans = self._detect_raw(normalized)
-            return self._apply_policy(
-                _merge_overlaps(found + restore_detection_offsets(normalized_spans, offsets))
-            )
-        except Exception as exc:
-            raise DetectionError('Normalized text detection failed; text was not fully checked') from exc
+        if normalized != text:
+            try:
+                normalized_spans = self._detect_raw(normalized, disabled, view)
+                found = self._apply_policy(
+                    _merge_overlaps(found + restore_detection_offsets(normalized_spans, offsets)), disabled
+                )
+            except Exception as exc:
+                raise DetectionError('Normalized text detection failed; text was not fully checked') from exc
+        return span_policy(text, found) if span_policy is not None else found
 
-    def _detect_raw(self, text: str) -> list[dict]:
+    def _detect_raw(self, text: str, disabled=None, view=None) -> list[dict]:
         found = [{'start': m.start(), 'end': m.end(), 'type': kind}
                  for kind, pattern in (('PHONE', _PHONE), ('EMAIL', _EMAIL))
                  for m in pattern.finditer(text)]
@@ -274,7 +295,7 @@ class Detector:
         # A password value beats phone/email/number spans inside it (kr_rules.password_first).
         found = password_first(text, found + structured)
         if not self.model_enabled or not text:
-            return self._apply_policy(_merge_overlaps(found))
+            return self._apply_policy(_merge_overlaps(found), disabled)
         try:
             # Strong structured matches take precedence only when they fully
             # cover a model span. Partial overlaps still require review.
@@ -284,13 +305,13 @@ class Detector:
                     rule['start'] <= span['start'] and span['end'] <= rule['end']
                     and rule['type'] != span['type'] for rule in structured))
             if self._slm is not None:
-                found = self._add_slm_spans(text, found)
+                found = self._add_slm_spans(text, found, view)
         except Exception as exc:
             # Return no partial result; avoid leaking input through exception text.
             raise DetectionError('Local model inference failed; text was not fully checked') from exc
-        return self._apply_policy(_merge_overlaps(found))
+        return self._apply_policy(_merge_overlaps(found), disabled)
 
-    def _add_slm_spans(self, text: str, found: list[dict]) -> list[dict]:
+    def _add_slm_spans(self, text: str, found: list[dict], view=None) -> list[dict]:
         """Add SLM spans without cross-type overlaps (which pseudonymization rejects).
 
         - Rule-engine spans (keys, passwords, phone, email, resident/card/account numbers, IP,
@@ -308,7 +329,7 @@ class Detector:
         # Pseudonym placeholders ([주소_1]) are not data; the SLM tends to re-flag them on re-inspection.
         placeholders = [{'start': m.start(), 'end': m.end()} for m in _PLACEHOLDER.finditer(text)]
         slm = []
-        for span in self._slm.detect(text):
+        for span in (self._slm.detect(text) if view is None else self._slm.detect(text, view=view)):
             # A span touching a placeholder is the SLM re-reading already-masked content.
             if any(p['start'] < span['end'] and span['start'] < p['end'] for p in placeholders):
                 continue

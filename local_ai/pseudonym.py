@@ -53,12 +53,43 @@ class RestoreResult:
 _PLACEHOLDER = re.compile(r"\[[^\[\]\r\n]+_\d+\]")
 _NO_RESTORE = frozenset({"API_KEY", "ACCESS_TOKEN", "PASSWORD"})
 
+# Transform methods from the policy (console `types[].method`, rule `action`; #47).
+# A detection may carry ``method``; anything else (missing, "대체", "—") replaces with a
+# restorable placeholder. 삭제/태그/일반화 outputs are not placeholders and never restore.
+METHOD_REPLACE, METHOD_GENERALIZE, METHOD_DELETE, METHOD_TAG = "대체", "일반화", "삭제", "태그"
+DELETED_TOKEN = "[삭제됨]"
+# Fixed outputs of 삭제/태그. The detector skips them like placeholders on re-inspection.
+POLICY_TOKEN = re.compile(r"\[(?:" + "|".join(
+    re.escape(label) for label in sorted(set(_TYPE_LABELS.values()) | {"삭제됨"}, key=len, reverse=True)
+) + r")\]")
+_YEAR = re.compile(r"(?<![0-9])(1[89][0-9]{2}|20[0-9]{2})(?![0-9])")
+
+
+def _tag(kind: str) -> str:
+    return f"[{_TYPE_LABELS[kind]}]"
+
+
+def _generalize(kind: str, value: str) -> str | None:
+    """Coarse value for 일반화, or None when the type has no generalization (then 대체).
+
+    ADDRESS keeps the first two words (시·도 + 시·군·구), DOB keeps the decade.
+    """
+    if kind == "ADDRESS":
+        words = value.split()
+        coarse = " ".join(words[:2])
+        return coarse if coarse and coarse != value.strip() else _tag(kind)
+    if kind == "DOB":
+        year = _YEAR.search(value)
+        return f"{year.group(1)[:3]}0년대" if year else _tag(kind)
+    return None
+
 
 @dataclass(frozen=True)
 class _Span:
     start: int
     end: int
     kind: str
+    method: str | None = None
 
 
 def _spans(text: str, detections: Sequence[Mapping[str, object]]) -> list[_Span]:
@@ -76,7 +107,8 @@ def _spans(text: str, detections: Sequence[Mapping[str, object]]) -> list[_Span]
             raise PseudonymError("invalid detection offsets")
         if not isinstance(kind, str) or kind not in _TYPE_LABELS:
             raise PseudonymError("unsupported detection type")
-        spans.append(_Span(start, end, kind))
+        method = detection.get("method")
+        spans.append(_Span(start, end, kind, method if isinstance(method, str) else None))
 
     spans.sort(key=lambda item: (item.start, item.end, item.kind))
     merged: list[_Span] = []
@@ -85,7 +117,7 @@ def _spans(text: str, detections: Sequence[Mapping[str, object]]) -> list[_Span]
             previous = merged[-1]
             if previous.kind != span.kind:
                 raise PseudonymError("overlapping detection types require review")
-            merged[-1] = _Span(previous.start, max(previous.end, span.end), previous.kind)
+            merged[-1] = _Span(previous.start, max(previous.end, span.end), previous.kind, previous.method)
         else:
             merged.append(span)
     return merged
@@ -115,6 +147,10 @@ class PseudonymSession:
         occupied = self._reserved_literals | literal_tokens | set(mapping.values())
         replacements: list[tuple[int, int, str]] = []
         for span in spans:
+            fixed = self._fixed_output(span, text[span.start:span.end])
+            if fixed is not None:
+                replacements.append((span.start, span.end, fixed))
+                continue
             key = (span.kind, text[span.start:span.end])
             token = mapping.get(key)
             if token is None:
@@ -135,6 +171,17 @@ class PseudonymSession:
         self._next = counters
         self._reserved_literals.update(literal_tokens)
         return result
+
+    @staticmethod
+    def _fixed_output(span: _Span, value: str) -> str | None:
+        """Output of a non-restorable method, or None to use a restorable placeholder."""
+        if span.method == METHOD_DELETE:
+            return DELETED_TOKEN
+        if span.method == METHOD_TAG:
+            return _tag(span.kind)
+        if span.method == METHOD_GENERALIZE:
+            return _generalize(span.kind, value)
+        return None
 
     def restore(self, text: str) -> RestoreResult:
         """Restore only current-session non-secret placeholders in a single pass.

@@ -27,13 +27,18 @@ _STATUS_CODES = {
 }
 
 
-def classify_file_types(detected_types):
-    grade = decide_grade(detected_types)
+def classify_file_types(detected_types, overrides=None):
+    grade = decide_grade(detected_types, overrides)
     # Keep future, unrecognized PII types sensitive rather than passing them
     # through as public. The shared policy determines the confidential types.
     if grade == Grade.confidential:
         return "C"
-    return "S" if detected_types else "O"
+    if grade == Grade.sensitive:
+        return "S"
+    # Types the policy explicitly re-graded are decided above; only the rest
+    # fall back to sensitive.
+    overridden = {t for t, g in (overrides or {}).items() if g in _GRADES}
+    return "S" if set(detected_types) - overridden else "O"
 
 
 def detection_fields(findings: Findings, *, blocked: bool) -> dict:
@@ -92,13 +97,16 @@ class FileProcessingJob:
             except Exception:
                 return self.failure(503, "MODEL_UNAVAILABLE")
 
-            # Snapshot the active policy once, apply it to the detector before
-            # checking, and log that same version (#49): a deploy during a long
-            # upload must not relabel the result.
-            policy = policy_store.current()
-            apply_policy_to_detector(detector, policy)
-            session = LocalSession(detector)
-            processor = LocalPIIProcessor(session, classify=classify_file_types)
+            # Snapshot the active policy once and check the whole file with that
+            # compiled policy only (types, rules, dict, exclude, grade, method), then
+            # log the same version (#47, #49): a deploy during a long upload must not
+            # mix policies or relabel the result. A failed apply keeps the previous
+            # policy, and ``policy.version`` is the one actually used.
+            policy = apply_policy_to_detector(detector, policy_store.current())
+            session = LocalSession(policy.bind(detector))
+            processor = LocalPIIProcessor(
+                session, classify=lambda types: classify_file_types(types, policy.grade_overrides),
+            )
             result = sanitize_xlsx(data, self.work_id, processor, filename=filename)
             if result.status == "FAILED":
                 return self.failure(_STATUS_CODES.get(result.reason, 500), result.reason)
@@ -108,7 +116,7 @@ class FileProcessingJob:
                 work_id=self.work_id, grade=_GRADES[result.grade],
                 findings=processor.findings, data=data,
                 model_enabled=detector.model_enabled,
-                policy_version=policy.version if policy is not None else None,
+                policy_version=policy.version,
             )
             if blocked:
                 # Like /process/decide, answer only once the event is stored (#32).

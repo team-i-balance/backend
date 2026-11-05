@@ -37,7 +37,7 @@ import json
 import os
 import tempfile
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -387,6 +387,17 @@ class ActivePolicy:
     expires_at: Optional[str]
     activated_at: str
     bundle_sha256: str
+    # Hashed company words / excluded values (#47). Defaults keep rows stored
+    # before these fields existed loadable.
+    dict: list = field(default_factory=list)
+    exclude: list = field(default_factory=list)
+
+
+def _hash_list(value) -> list:
+    """Optional `dict`/`exclude` arrays; anything but a list of objects is ignored."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def bundle_hash(bundle: dict) -> str:
@@ -491,6 +502,8 @@ class PolicyStore:
                 expires_at=verified.expires_at,
                 activated_at=datetime.now(timezone.utc).isoformat(),
                 bundle_sha256=bundle_hash(bundle),
+                dict=_hash_list(verified.payload.get("dict")),
+                exclude=_hash_list(verified.payload.get("exclude")),
             )
             conn.execute(
                 """INSERT INTO policy_active (singleton, version, data) VALUES (1, ?, ?)

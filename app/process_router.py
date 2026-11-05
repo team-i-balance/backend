@@ -80,12 +80,14 @@ def process_text(body: ProcessIn):
     from app.policy_apply import apply_policy_to_detector
 
     detector = _get_detector(body.rules_only)
-    # Apply the active policy's type toggles to the (shared) detector.
-    active_policy = policy_store.current()
-    apply_policy_to_detector(detector, active_policy)
+    # Read the active policy once and compile it (cached while unchanged). The
+    # request detects with that snapshot only, so a concurrent deploy cannot mix
+    # policies, and the logged version is the one used (#47, #49). A policy that
+    # fails to apply leaves the previous one in effect; ``applied.version`` says which.
+    applied = apply_policy_to_detector(detector, policy_store.current())
     if body.file_work_id is None:
         # The pseudonym mapping is per-work; the detector is shared.
-        session = LocalSession(detector)
+        session = LocalSession(applied.bind(detector))
     else:
         session = file_store.lend(body.file_work_id)
         if session is None:
@@ -110,7 +112,7 @@ def process_text(body: ProcessIn):
             detail="detection failed; text was not fully checked",
         )
 
-    grade = decide_grade(result.detection_types)
+    grade = decide_grade(result.detection_types, applied.grade_overrides)
     confidence = coverage_to_confidence(result.coverage)
 
     item = store.add(
@@ -122,8 +124,8 @@ def process_text(body: ProcessIn):
         grade=grade.value,
         detection_confidence=confidence.value,
         remaining_count=len(result.remaining),
-        # The version whose toggles this detection used (issue #49).
-        policy_version=active_policy.version if active_policy is not None else None,
+        # The version this detection used (issues #47, #49).
+        policy_version=applied.version,
     )
 
     return ProcessOut(

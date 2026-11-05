@@ -39,6 +39,7 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 최근 7일 집계와 1,000건 이상의 목록 조회는 [로그 통계·페이지 넘김 문서](docs/log-stats-api.md)를 참고하세요.
 원문 전송 후 사유 제출 흐름, 추가 응답 필드와 재시도 규칙은 [직원 사유 API 문서](docs/event-reason-api.md)를 참고하세요.
 정책 초안 저장·충돌 처리·발행과 사건 규칙 연결 방법은 [정책 초안 API 문서](docs/policy-draft-api.md)를 참고하세요.
+서버가 배포 정책의 어떤 필드(켬/끔·등급·변환 방식·규칙·고유 단어·탐지 제외)를 어떻게 적용하는지는 [정책 적용 문서](docs/policy-apply.md)를 참고하세요.
 
 ### 로그 API 시험 이벤트
 
@@ -167,6 +168,8 @@ LibreOffice Calc의 기본 계산 설정과 빈 머리글·바닥글 및 빈 사
 - `POLICY_DB_PATH`: 정책 초안·번들·적용 상태·PC 기록·모델을 저장할 SQLite 경로. 기본값 `data/policy.db`.
 - `POLICY_KEYS_DIR`: 정책 서명 개인키와 신뢰 공개키 디렉터리. 기본값 `keys/`.
   운영에서는 DB와 기존 키를 모두 영구 경로에 보관하세요. [저장·이전 안내](docs/policy-persistence.md).
+- `POLICY_VALUE_HASH_KEY`: 정책 `dict`·`exclude`의 `hmac:` 항목(이벤트 `value_hash`)을 비교할 조직 키.
+  PC 에이전트가 `value_hash`를 만들 때 쓰는 키와 같아야 합니다. 없으면 `hmac:` 항목은 무시하고 경고만 남깁니다.
 - `ALLOWED_ORIGINS`: CORS 허용 오리진(콤마 구분). 기본값 `*`.
   배포 시 프론트엔드 주소로 지정하세요. 예: `https://your-app.vercel.app`
 
