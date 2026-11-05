@@ -10,8 +10,15 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | GET    | `/health` | `{"status": "ok"}` 헬스체크   |
 | POST   | `/files/sanitize` | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
 | GET    | `/files/{work_id}/download` | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
+| GET    | `/cases` | 필수·선택 검토 및 종결 건 목록, 커서 페이지 이동 |
+| GET    | `/cases/{id}` | 이벤트 메타데이터와 판단·처리 이력 |
+| POST   | `/cases/{id}/close` | 위반·예외 인정·오탐으로 종결 |
+| POST   | `/cases/{id}/reopen` | 이전 이력을 유지하고 다시 열기 |
+| POST   | `/cases/close-bulk` | 선택 검토 건을 일괄 ‘문제 없음’으로 종결 |
 
 파일 API의 요청·응답, 오류 코드, 내부 AI 전송 연결 방법은 [파일 API 문서](docs/file-api.md)를 참고하세요.
+검토 대상 기준, 요청·응답과 콘솔 연결 방법은 [보안팀 검토 API 문서](docs/case-api.md)를 참고하세요.
+검토 상태는 기존 `LOG_DB_PATH`에 영구 저장합니다. 인증 연결 전 처리자는 `unauthenticated`로 기록합니다.
 기존 텍스트·로그 API를 포함한 전체 명세는 서버의 `/docs`에서 확인할 수 있습니다.
 
 ## 로컬 실행
