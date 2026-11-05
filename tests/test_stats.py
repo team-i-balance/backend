@@ -17,6 +17,7 @@ def test_stats_empty(client):
         "by_queue": {},
         "by_grade": {},
         "by_action": {"send_as_is": 0, "send_transformed": 0, "cancel": 0, "revert_original": 0},
+        "by_policy_version": {},
     }
 
 

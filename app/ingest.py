@@ -31,6 +31,14 @@ def coverage_to_confidence(coverage: str) -> Confidence:
     return _COVERAGE_TO_CONFIDENCE.get(coverage, Confidence.medium)
 
 
+def active_policy_version() -> Optional[int]:
+    """Version of the policy the server has active now, or None (read-only, #49)."""
+    from app.policy import store as policy_store
+
+    active = policy_store.current()
+    return active.version if active is not None else None
+
+
 def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -52,6 +60,7 @@ def build_event(
     device_id: Optional[str] = None,
     reason_text: Optional[str] = None,
     items: Optional[list[EventItem]] = None,
+    policy_version: Optional[int] = None,
 ) -> EventIn:
     """Construct the EventIn for a user's decision on a processed item."""
     # reverted: user rolled back to the original (revert_original).
@@ -76,4 +85,5 @@ def build_event(
         device_id=device_id,
         reason_text=reason_text,
         items=items or [],
+        policy_version=policy_version,
     )
