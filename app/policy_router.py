@@ -7,9 +7,11 @@ PC side:
 Backend (console) side:
   POST /policy/publish         sign a payload into a bundle, version+1, store
   GET  /policy/latest          latest bundle (ETag = bundle sha256; 304 aware)
+  GET  /policy/history         published bundles, newest first
   GET  /policy/{version}       a specific bundle (audit / replay)
   POST /policy/ack             record a PC agent's apply/reject result
-  GET  /policy/acks            aggregate apply/reject counts
+  GET  /policy/acks            aggregate apply/reject counts (?version=N)
+  GET  /policy/{version}/acks  counts for one version
 
 Model manifest:
   POST /policy/model/publish   sign + store a model manifest
@@ -17,7 +19,10 @@ Model manifest:
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Response
+from typing import Optional
+
+from fastapi import APIRouter, Header, HTTPException, Query, Response
+from pydantic import BaseModel
 
 from app.policy import (
     ActivePolicy,
@@ -37,6 +42,26 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/policy", tags=["policy"])
+
+
+class HistoryItem(BaseModel):
+    """One published bundle. stored_at is the server's UTC ISO store time;
+    null if the bundle was stored without one (never invented)."""
+
+    version: int
+    sha256: str
+    stored_at: Optional[str] = None
+    rule_count: int
+
+
+class VersionAcks(BaseModel):
+    """Apply/reject counts for one version (each device's last ack for it)."""
+
+    version: int
+    devices: int
+    applied: int
+    rejected: int
+    reject_reasons: dict[str, int]
 
 
 def _info(active: ActivePolicy | None) -> PolicyInfo:
@@ -87,8 +112,30 @@ def latest(response: Response, if_none_match: str | None = Header(default=None))
 
 
 @router.get("/acks", response_model=AckOut)
-def acks():
-    return AckOut(ok=True, summary=store.ack_summary())
+def acks(version: Optional[int] = Query(default=None)):
+    # Without ?version: each device's last ack (legacy console view).
+    # With ?version=N: only acks for N. Response shape is the same either way.
+    return AckOut(ok=True, summary=store.ack_summary(version))
+
+
+@router.get("/history", response_model=list[HistoryItem])
+def history():
+    return [
+        HistoryItem(
+            version=s.version,
+            sha256=s.sha256,
+            stored_at=s.stored_at,
+            rule_count=s.rule_count,
+        )
+        for s in store.history()
+    ]
+
+
+@router.get("/{version}/acks", response_model=VersionAcks)
+def version_acks(version: int):
+    if store.get_version(version) is None and not store.has_acks(version):
+        raise HTTPException(status_code=404, detail="unknown version")
+    return VersionAcks(version=version, **store.ack_summary(version))
 
 
 @router.post("/ack", response_model=AckOut)
