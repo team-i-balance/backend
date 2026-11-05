@@ -101,38 +101,54 @@ local_ai의 `coverage`를 로그의 `detection_confidence`로 바꾼다.
 - 복원용 가명 매핑(`work_id` 단위)은 메모리에 잠시 보관하고 TTL 만료 또는
   `/decide` 처리 후 폐기한다.
 
-## 10. 정책 번들 배포 + 서명 검증 (흐름도 S7)
+## 10. 정책 번들 배포 + 서명 검증 (흐름도 S7, DSSE 명세)
 
-보안팀 도구(S6)가 만든 **서명된 정책 번들**을 받아 서명을 검증하고,
-유효하면 활성 정책으로 채택한다. 무효면 **번들을 무시**(기존 정책 유지).
+보안팀 콘솔(S6)이 서명한 **DSSE 정책 번들**을 받아 서명·내용을 검증하고,
+통과하면 활성 정책으로 채택한다. 하나라도 실패하면 **쓰던 정책을 유지**하고
+실패 사유 코드를 보고한다. (명세: `message.txt` "변환 정책 번들·서명 명세")
 
-> 번들 포맷과 서명 방식은 S6 팀원이 확정 예정이다. 그래서 포맷 의존 부분을
-> `app/policy.py`의 **상수(FIELD_*)** 와 **`PolicyVerifier` 인터페이스**로
-> 격리했다. 실제 포맷이 오면 verifier(또는 상수)만 교체하면 되고, 저장소·
-> 라우터·테스트는 그대로다.
-
-기본 가정(교체 가능):
+### DSSE 봉투
 
 ```json
 {
-  "payload": { "version": <int>, "rules": [ ... ] },
-  "signature": "<base64 Ed25519 서명 (canonical(payload) 대상)>",
-  "key_id": "<문자열>"
+  "payloadType": "application/vnd.piiguard.policy+json",
+  "payload": "<정책 JSON 바이트의 base64>",
+  "signatures": [{ "keyid": "console-2026-11", "sig": "<Ed25519 서명 base64>" }]
 }
 ```
 
-- 서명 대상: `payload`의 **정규화 JSON**(키 정렬·공백 최소). 키 순서가 달라도
-  검증이 깨지지 않는다.
-- 서버는 **공개키만** 보관(검증용). 개인키는 보안팀 오프라인(여기선 테스트용
-  임시 키 생성).
-- **버전 규칙**: 활성 버전보다 **큰 version만** 채택(롤백 방지). 같거나 낮으면 거부.
-- 검증/버전 거부 시 활성 정책은 바뀌지 않는다.
+- 서명 대상은 JSON이 아니라 **PAE 바이트**:
+  `"DSSEv1 " + len(type) + " " + type + " " + len(payload) + " " + payload`.
+  그래서 JSON 키 순서·공백을 신경 쓸 필요가 없다.
+- 검증 측은 `payload`를 base64 디코딩한 **그 바이트로 서명을 먼저 확인한 뒤에만**
+  JSON을 파싱한다.
+- 서버는 신뢰 공개키(`trust/<keyid>.pub`)만 보관. 개인키는 콘솔/KMS(여기선
+  시연용 임시 키 생성).
 
-엔드포인트:
+### 검증 순서 (실패 시 적용 안 함 + 사유 코드)
+
+| 순서 | 확인 | 실패 코드 |
+| --- | --- | --- |
+| 1 | `payloadType`이 맞는가 | `bad_type` |
+| 2 | 신뢰 `keyid`의 서명이 PAE 바이트와 맞는가 | `bad_signature` |
+| 3 | `schema`를 아는가 (현재 1) | `unsupported_schema` |
+| 4 | `org`가 내 조직인가 | `wrong_org` |
+| 5 | `version`이 마지막 정상본보다 큰가 | `rollback` |
+| 6 | `expires_at`이 지나지 않았는가 | `expired` |
+| 7 | `model.sha256`이 설치 모델과 같은가 | `model_mismatch` |
+
+- 만료되면 **새 번들은 거부**하되, 쓰던 정책은 계속 쓴다.
+- `model.sha256` 검사는 `POLICY_EXPECTED_MODEL_SHA256`가 설정됐을 때만 수행
+  (미설정이면 건너뜀 — 시연 편의).
+- 설정: `POLICY_ORG`(기본 `acme`), `POLICY_KEYS_DIR`(신뢰키·시연 서명키 위치).
+
+### 엔드포인트
 
 | Method | Path | 설명 |
 | --- | --- | --- |
-| POST | `/policy/deploy` | 번들 검증 → 유효+최신이면 활성화, 아니면 거부(무시) |
-| GET | `/policy/current` | 현재 활성 정책 메타(버전·key_id·규칙 수·활성 시각) |
+| POST | `/policy/deploy` | 번들 검증 → 통과+최신이면 적용, 아니면 거부(사유 코드) |
+| GET | `/policy/current` | 현재 활성 정책 메타(org·version·keyid·규칙 수·만료·적용 시각) |
 
-> 활성화된 정책을 실제 변환(S2 되먹임)에 적용하는 것은 다음 단계다.
+> 이번 범위: DSSE 봉투 파싱 + PAE Ed25519 검증 + 7단계 검증 + 활성 정책 저장.
+> 다음 단계: 활성 규칙을 SLM `set_policy`로 **실제 변환에 적용**, `/policy/publish`
+> ·`/policy/ack`·`/policy/latest`(ETag) 와 모델 매니페스트.

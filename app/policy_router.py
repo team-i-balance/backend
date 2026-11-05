@@ -1,8 +1,10 @@
-"""/policy: deploy a signed policy bundle and read the active policy (S7).
+"""/policy: deploy a signed DSSE policy bundle and read the active policy (S7).
 
-Deploy verifies the bundle's signature. If valid and newer, it becomes the
-active policy; otherwise the request is rejected and the previous policy is
-kept. Applying the policy to actual transformation is a later step.
+Deploy verifies the bundle per the team spec (DSSE envelope + Ed25519 over PAE
+bytes + the 7 ordered checks). If it passes and is newer, it becomes the active
+policy; otherwise the request is rejected with the spec reason code and the
+previous policy is kept. Applying rules to the SLM and /publish, /ack, and the
+model manifest are later steps.
 """
 from __future__ import annotations
 
@@ -20,9 +22,11 @@ def _info(active: ActivePolicy | None) -> PolicyInfo:
     return PolicyInfo(
         active=True,
         version=active.version,
-        key_id=active.key_id,
+        org=active.org,
+        key_id=active.keyid,
         rule_count=active.rule_count,
         activated_at=active.activated_at,
+        expires_at=active.expires_at,
     )
 
 

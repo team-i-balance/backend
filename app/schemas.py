@@ -183,9 +183,11 @@ class PolicyInfo(BaseModel):
 
     active: bool
     version: Optional[int] = None
+    org: Optional[str] = None
     key_id: Optional[str] = None
     rule_count: Optional[int] = None
     activated_at: Optional[str] = None
+    expires_at: Optional[str] = None
 
 
 class DeployOut(BaseModel):
