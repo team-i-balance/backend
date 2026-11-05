@@ -1,0 +1,115 @@
+{
+  "title": "Business/API candidate rule evaluation",
+  "datasets": {
+    "korean_pii_cc_by.jsonl": {
+      "sha256": "9a9d9ed0897f1c340d90b1a349bb5a9589e1788b6eca92df6e505f73002c9dd8",
+      "documents": 510
+    },
+    "secrets_noncommercial.jsonl": {
+      "sha256": "e223c8b2eb50c6e35a881a2bc228a2cfb222305d01c118292932d7aceefa5251",
+      "documents": 90
+    }
+  },
+  "dataset_license": {
+    "korean_pii_cc_by.jsonl": "CC-BY-4.0",
+    "secrets_noncommercial.jsonl": "CC-BY-NC-4.0; non-commercial use only unless rights are confirmed"
+  },
+  "documents": 600,
+  "scope": "rules-only detector plus candidate overlay; no production files changed",
+  "definition": "A gold span counts as detected only when the allowed type covers every gold character.",
+  "metrics": {
+    "business_registration_id": {
+      "baseline_full_typed": 0,
+      "candidate_only_full_typed": 26,
+      "combined_full_typed": 26,
+      "gold_spans": 26
+    },
+    "api_key": {
+      "baseline_full_typed": 14,
+      "candidate_only_full_typed": 17,
+      "combined_full_typed": 23,
+      "gold_spans": 30
+    }
+  },
+  "by_source_split": {
+    "korean_pii_cc_by.jsonl: seongyeon1/ko-pii-ner-100k / test": {
+      "business_registration_id": {
+        "baseline_full_typed": 0,
+        "candidate_only_full_typed": 26,
+        "combined_full_typed": 26,
+        "gold_spans": 26
+      }
+    },
+    "secrets_noncommercial.jsonl: Podric/prowl-secrets-corpus / prowlbench": {
+      "api_key": {
+        "baseline_full_typed": 14,
+        "candidate_only_full_typed": 17,
+        "combined_full_typed": 23,
+        "gold_spans": 30
+      }
+    }
+  },
+  "unannotated_secret_examples": {
+    "documents": 30,
+    "baseline_with_any_secret_candidate": 1,
+    "candidate_with_any_secret_candidate": 1
+  },
+  "synthetic_regression_fixtures": {
+    "cases": {
+      "positive_business_hyphen_invalid_checksum": {
+        "expected_detection": true,
+        "detected": true,
+        "pass": true
+      },
+      "positive_business_plain_context": {
+        "expected_detection": true,
+        "detected": true,
+        "pass": true
+      },
+      "negative_business_unlabeled_number": {
+        "expected_detection": false,
+        "detected": false,
+        "pass": true
+      },
+      "positive_api_environment_assignment": {
+        "expected_detection": true,
+        "detected": true,
+        "pass": true
+      },
+      "positive_bearer_assignment": {
+        "expected_detection": true,
+        "detected": true,
+        "pass": true
+      },
+      "negative_api_shell_placeholder": {
+        "expected_detection": false,
+        "detected": false,
+        "pass": true
+      },
+      "negative_api_variable_placeholder": {
+        "expected_detection": false,
+        "detected": false,
+        "pass": true
+      },
+      "negative_api_angle_placeholder": {
+        "expected_detection": false,
+        "detected": false,
+        "pass": true
+      },
+      "negative_api_pseudonym": {
+        "expected_detection": false,
+        "detected": false,
+        "pass": true
+      },
+      "negative_normal_prose": {
+        "expected_detection": false,
+        "detected": false,
+        "pass": true
+      }
+    },
+    "passed": 10,
+    "total": 10,
+    "failures": []
+  },
+  "network_guard": "Python socket connect/create_connection blocked; native dependency network behavior not proven"
+}
