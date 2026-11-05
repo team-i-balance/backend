@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS event_log (
     reverted        INTEGER NOT NULL DEFAULT 0,
     restored        INTEGER NOT NULL DEFAULT 0,
     content_hash    TEXT,
-    queue           TEXT    NOT NULL
+    queue           TEXT    NOT NULL,
+    is_test         INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_created_at ON event_log (created_at);
@@ -57,8 +58,44 @@ CREATE INDEX IF NOT EXISTS idx_case_history_event ON case_history (event_id, id)
 """
 
 
+# Integration-check events that were sent to the deployed server before the
+# `test` flag existed (issue #27). They are flagged, never deleted.
+LEGACY_TEST_REQUEST_ID_PATTERN = "console-test-%"
+
+
+def _columns(conn, table: str) -> set[str]:
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate_is_test(conn) -> None:
+    """Add event_log.is_test to DBs created before it existed.
+
+    Idempotent: does nothing once the column is present. Adding the column
+    and flagging the legacy console-test-* rows happen in one transaction, so
+    a crash cannot leave the column added but the rows unflagged.
+    """
+    if "is_test" in _columns(conn, "event_log"):
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Re-check under the write lock in case another process migrated.
+        if "is_test" not in _columns(conn, "event_log"):
+            conn.execute(
+                "ALTER TABLE event_log "
+                "ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.execute(
+                "UPDATE event_log SET is_test = 1 WHERE request_id LIKE ?",
+                (LEGACY_TEST_REQUEST_ID_PATTERN,),
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def init_db() -> None:
-    """Create tables and add reason tracking to existing event databases."""
+    """Create tables; add reason tracking and the is_test flag to existing event databases."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
@@ -83,6 +120,9 @@ def init_db() -> None:
             UPDATE event_log SET reason_at = created_at
             WHERE reason IS NOT NULL AND reason_at IS NULL
         """)
+        # Finish the reason migration's transaction before the is_test migration opens its own.
+        conn.commit()
+        _migrate_is_test(conn)
 
 
 @contextmanager

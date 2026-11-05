@@ -31,6 +31,16 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 원문 전송 후 사유 제출 흐름, 추가 응답 필드와 재시도 규칙은 [직원 사유 API 문서](docs/event-reason-api.md)를 참고하세요.
 정책 초안 저장·충돌 처리·발행과 사건 규칙 연결 방법은 [정책 초안 API 문서](docs/policy-draft-api.md)를 참고하세요.
 
+### 로그 API 시험 이벤트
+
+연동 확인용 이벤트는 `POST /logs/events` 본문에 `"test": true`를 넣어 보냅니다. 저장과 큐 분류는 일반 이벤트와 같지만, 아래 조회에서는 기본으로 빠집니다.
+
+- `GET /logs/events`, `GET /logs/queues/{name}`, `GET /logs/stats`, `POST /logs/export`
+- 시험 이벤트까지 보려면 쿼리에 `include_test=true`를 붙입니다. 예: `GET /logs/stats?include_test=true`
+- 응답의 각 이벤트에는 `test` 필드(true/false)가 있습니다.
+
+`test` 필드가 생기기 전에 들어간 `request_id`가 `console-test-`로 시작하는 이벤트는 서버 시작 때 마이그레이션이 시험 이벤트로 표시합니다. 데이터는 지우지 않습니다.
+
 ## 로컬 실행
 
 ```bash
