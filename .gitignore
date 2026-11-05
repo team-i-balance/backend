@@ -26,3 +26,6 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Synthetic local XLSX demo runs
+/demo-output/
