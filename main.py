@@ -5,12 +5,19 @@ import os
 
 from app.db import init_db
 from app.router import router as logs_router
+from app.process_router import router as process_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    yield
+    from app.sessions import store
+
+    store.start_sweeper()
+    try:
+        yield
+    finally:
+        store.stop_sweeper()
 
 
 app = FastAPI(title="iBalance Backend", version="0.1.0", lifespan=lifespan)
@@ -30,6 +37,7 @@ app.add_middleware(
 
 
 app.include_router(logs_router)
+app.include_router(process_router)
 
 
 @app.get("/")

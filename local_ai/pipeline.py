@@ -10,6 +10,7 @@ class CheckResult:
     detection_types: tuple[str, ...]
     remaining: tuple[dict, ...]
     coverage: str
+    detection_count: int = 0  # number of detected spans (not distinct types)
 
 
 class LocalSession:
@@ -28,7 +29,8 @@ class LocalSession:
         anonymized = self._pseudonyms.pseudonymize(text, detections)
         remaining = self.detector.detect(anonymized)
         return CheckResult(anonymized, tuple(sorted({d['type'] for d in detections})),
-                           tuple(remaining), 'model_and_rules' if self.detector.model_enabled else 'rules_only_incomplete')
+                           tuple(remaining), 'model_and_rules' if self.detector.model_enabled else 'rules_only_incomplete',
+                           len(detections))
 
     def restore(self, text: str):
         if self._closed:
