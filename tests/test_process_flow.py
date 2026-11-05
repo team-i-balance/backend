@@ -245,7 +245,11 @@ def test_process_detection_failure_returns_422_without_text(client, monkeypatch)
         def close(self):
             pass
 
-    monkeypatch.setattr(pr, "_get_detector", lambda rules_only: object())
+    class DummyDetector:
+        def set_policy(self, **kw):
+            pass
+
+    monkeypatch.setattr(pr, "_get_detector", lambda rules_only: DummyDetector())
     import local_ai.pipeline as pipeline
 
     monkeypatch.setattr(pipeline, "LocalSession", BoomSession)
@@ -268,6 +272,9 @@ def test_full_mode_with_model_dir_builds_detector(client, monkeypatch, tmp_path)
     class FakeDetector:
         def __init__(self, model_dir=None, **kw):
             built["model_dir"] = model_dir
+
+        def set_policy(self, **kw):
+            pass
 
     import local_ai.detector as det
 
@@ -300,6 +307,10 @@ def test_full_mode_with_model_dir_builds_detector(client, monkeypatch, tmp_path)
     assert built["model_dir"] == str(tmp_path)  # model dir branch taken
     assert body["detection_confidence"] == "high"  # model_and_rules -> high
     assert body["grade"] == "sensitive_S"
+
+    # Issue #20: a certain detection sent as-is is the console's required review.
+    d = client.post("/process/decide", json={"work_id": body["work_id"], "action": "send_as_is"}).json()
+    assert d["event"]["queue"] == "real_violation"
 
 
 def test_detector_is_reused_across_requests(client):

@@ -5,7 +5,7 @@ Enum values mirror app/rules.md (the temporary in-house classification rules).
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Grade(str, Enum):
@@ -74,6 +74,13 @@ class EventItem(BaseModel):
     )
 
 
+class Source(str, Enum):
+    """Which flow produced an event (issue #32)."""
+
+    text = "text"  # /process -> /process/decide, or a client posting /logs/events
+    file = "file"  # XLSX file API: BLOCKED response, protected copy download, expiry
+
+
 class EventIn(BaseModel):
     """Incoming runtime event. Body text is NOT accepted — only metadata.
 
@@ -93,6 +100,10 @@ class EventIn(BaseModel):
     # SHA-256 hex digest: exactly 64 hex chars. We never store raw content,
     # only this optional fingerprint (see rules.md section 6).
     content_hash: Optional[str] = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
+    # Integration/smoke-test event. Stored and classified like any other, but
+    # excluded from list/queue/stats/export unless include_test=true.
+    test: bool = False
+    source: Source = Source.text
 
     # --- Context fields (issue #21) ------------------------------------------
     # Identifiers for the submitting employee and channel. All optional to
@@ -136,6 +147,9 @@ class EventOut(BaseModel):
     grade: str
     action: str
     reason: Optional[str]
+    reason_text: Optional[str] = None
+    reason_requested_at: Optional[str] = None
+    reason_at: Optional[str] = None
     detection_confidence: Optional[str]
     detected_types: list[str]
     detected_count: int
@@ -148,8 +162,23 @@ class EventOut(BaseModel):
     dept: Optional[str] = None
     target_ai: Optional[str] = None
     device_id: Optional[str] = None
-    reason_text: Optional[str] = None
     items: list[EventItem] = Field(default_factory=list)
+    test: bool = False
+    source: str = Source.text.value
+
+
+class EventReasonIn(BaseModel):
+    """Employee explanation submitted after a sensitive raw send."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Reason
+    text: str = Field(min_length=1, max_length=500)
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class Stats(BaseModel):
@@ -159,6 +188,7 @@ class Stats(BaseModel):
     evasion_suspect: int
     by_queue: dict[str, int]
     by_grade: dict[str, int]
+    by_action: dict[str, int]
 
 
 class ExportResult(BaseModel):
@@ -183,6 +213,17 @@ class ProcessIn(BaseModel):
     # rules_only = phone/email rules only (name/address NOT checked).
     # Full model mode requires a local model dir configured on the server.
     rules_only: bool = False
+    # A READY file work this question goes out with (issue #29). Its placeholders
+    # are numbered in that file's mapping, so one placeholder never stands for two
+    # values, and either restore covers both. The file is checked with the model,
+    # so a linked question is too: rules_only must stay false.
+    file_work_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _linked_question_uses_full_detection(self):
+        if self.file_work_id is not None and self.rules_only:
+            raise ValueError("file_work_id requires full detection (rules_only=false)")
+        return self
 
 
 class ProcessOut(BaseModel):
@@ -235,3 +276,82 @@ class RestoreOut(BaseModel):
     text: str
     unknown: list[str]   # placeholders not from this session (left as-is)
     blocked: list[str]   # secret placeholders intentionally not restored
+
+
+# --- Policy bundle deploy + signature verification (흐름도 S7) ----------------
+#
+# The exact bundle format and signing scheme are owned by the security-team
+# tool (S6) and will be finalized later. To avoid blocking on that, the deploy
+# endpoint accepts the whole bundle as an opaque object and hands it to a
+# pluggable verifier (see app/policy.py). When the real format arrives, only
+# the verifier/adapter changes; these models and the endpoint stay the same.
+
+
+class DeployIn(BaseModel):
+    """A signed policy bundle to deploy. Shape is intentionally loose."""
+
+    # The entire bundle object exactly as produced by the security-team tool.
+    # Interpreted by the configured PolicyVerifier, not here.
+    bundle: dict
+
+
+class PolicyInfo(BaseModel):
+    """Metadata about the currently active policy (no rule bodies dumped)."""
+
+    active: bool
+    version: Optional[int] = None
+    org: Optional[str] = None
+    key_id: Optional[str] = None
+    rule_count: Optional[int] = None
+    activated_at: Optional[str] = None
+    expires_at: Optional[str] = None
+
+
+class DeployOut(BaseModel):
+    """Result of a deploy attempt."""
+
+    accepted: bool
+    reason: str          # why it was accepted or rejected
+    policy: PolicyInfo   # the active policy AFTER this attempt
+
+
+class PublishIn(BaseModel):
+    """Console publishes a policy payload; the backend assigns version+1,
+    signs it into a DSSE bundle, and stores it. version (if provided) is
+    ignored — the store sets it."""
+
+    payload: dict
+
+
+class PublishOut(BaseModel):
+    version: int
+    keyid: str
+    bundle_sha256: str
+
+
+class AckStatus(str, Enum):
+    applied = "applied"
+    rejected = "rejected"
+
+
+class AckIn(BaseModel):
+    """A PC agent reports the outcome of applying a bundle version."""
+
+    device_id: str = Field(min_length=1, max_length=128)
+    version: int
+    status: AckStatus
+    reason: Optional[str] = Field(default=None, max_length=64)
+
+
+class AckOut(BaseModel):
+    ok: bool
+    summary: dict  # devices / applied / rejected / reject_reasons
+
+
+class ModelPublishIn(BaseModel):
+    """Console publishes a model manifest {name, version, sha256, url}."""
+
+    name: str
+    version: str
+    sha256: str
+    url: str

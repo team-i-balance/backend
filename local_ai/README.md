@@ -34,11 +34,35 @@ printf '문의는 user@example.com\n' | python -m local_ai --rules-only
 - macOS ARM64, 2스레드의 별도 단일 실행에서 탐지와 재검사를 포함한 약 1,019자 455ms, 10,019자 4,705ms를 기록했다. 합성 반복 텍스트이며 실제 장비의 성능을 보장하지 않는다. 두 측정까지 누적 최대 RSS는 약 450MiB였다.
 - 데스크톱 앱 연결, 실제 기기에서의 장기 자원 측정, OS 수준 네트워크 차단 검증은 미완료다. 가명화한 텍스트에도 민감한 내용이 남을 수 있다.
 
+## 외부 연결 없음
+
+탐지 중에는 외부로 연결하지 않는다. `local_ai/detector.py`는 onnxruntime을 import하기 전에 `ORT_DISABLE_TELEMETRY=1`을, `local_ai/slm`은 gliner·transformers·huggingface_hub를 import하기 전에 `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_HUB_DISABLE_TELEMETRY=1`을 기본값으로 설정한다(이미 지정한 값은 덮어쓰지 않는다). onnxruntime 1.31(Linux)은 `disable_telemetry_events()`만으로는 추론 중 `mobile.events.data.microsoft.com:443`에 연결을 시도하므로 환경변수가 필요하다(#13). 서버에서는 `ibalance-backend.service`에도 같은 값을 둔다. 검증은 `strace -f -e trace=connect -o /tmp/connect.log <서버 또는 탐지 명령>`으로 모델 로드와 추론을 실행한 뒤 로그에 루프백·유닉스 소켓 외의 `connect`가 없는지 확인한다. 라이브러리 버전이 바뀌어도 막히도록 배포 서버는 아웃바운드 방화벽(보안 그룹·nftables 등)으로 필요한 목적지 외의 송신을 차단할 것을 권장한다.
+
 ## 추가 탐지와 복원
 
 사업자번호는 하이픈 형태와 검증 숫자를 확인한다. 하이픈 없는 10자리 번호는 앞쪽 같은 줄의 사업자번호 문맥도 필요하다. 검증 숫자는 실제 사업자 등록 여부를 뜻하지 않는다. API 키는 `api_key` 대입, `access_token` 대입, `Authorization: Bearer` 값과 `sk-`, `sk-proj-`, `ghp_`로 시작하는 일부 형식을 검사한다. 그 밖의 키 형식이나 동적인 코드 표현은 탐지하지 못할 수 있다.
 
 `LocalSession.restore(text)`는 현재 작업에서 발급한 가명만 복원하고 `text`, `unknown`, `blocked`를 반환한다. API 키, 액세스 토큰, 비밀번호는 기본적으로 복원하지 않는다. 모르는 가명은 유지하며, 텍스트의 가명이 다른 작업에서 생성된 것인지 자체적으로 구별할 수 없으므로 호출자가 올바른 세션을 선택해야 한다. `close()` 후에는 복원할 수 없다. 사업자번호 표기에 하이픈 유무가 다르면 별도 원문 값으로 취급한다.
+
+## S등급 텍스트 변환 루프
+
+`SensitiveTransformLoop`는 독립적인 로컬 모듈이며 기존 Backend API에는 연결하지 않았다. S등급으로 판단된 텍스트에 대해서만 호출한다. 선택적으로 기존 탐지 구간을 전달할 수 있으며, 유형과 위치는 `local_ai` 타입과 Python 문자열의 시작 포함·끝 제외 인덱스를 따라야 한다. 미지원 SLM 유형은 검토가 필요하다.
+
+```python
+from local_ai.sensitive_loop import SensitiveTransformLoop
+
+loop = SensitiveTransformLoop(detector, max_iterations=3)
+try:
+    result = loop.process(text, initial_detections=spans)
+    if result.status == 'checked':
+        print(result.text)  # 합성 데모 데이터만 출력
+finally:
+    loop.close()
+```
+
+이름 등의 값은 작업별 가명으로 치환한다. ISO 형식의 `DOB`는 1차로 연도까지 일반화하며, 다시 탐지되면 가명으로 강화한다. `delete_types={'EMAIL'}`처럼 지정한 유형은 삭제할 수 있다. 일반화하거나 삭제한 원문은 가명 매핑에 넣지 않는다. 잔여 구간은 원문 위치로 안전하게 역추적할 수 있을 때만 다음 회차에 추가한다.
+
+결과 상태는 `checked`(완전한 모델+규칙 모드에서 재탐지 없음), `review`(검사 불완전·오류·충돌·반복 한도), `blocked`(기밀 유형)다. `checked`는 재식별 위험이 없다는 보증이나 자동 전송 승인이 아니다. 기존 평가셋에서 `checked`로 끝난 일부 문장에도 정답 원문이 남았으며, 결과 확인이 필요하다. 준식별자 간 조합에 대한 정책 기반 재식별 위험 판정은 아직 구현되지 않았다. 규칙 전용 모드에서는 잔여 탐지가 없어도 `review`를 반환한다. 최종 가명은 같은 루프의 `restore()`로만 복원하며, `close()`가 매핑을 폐기한다.
 
 ## 기밀·비정형 개인정보 SLM (`local_ai/slm`)
 

@@ -1,6 +1,6 @@
 # iBalance Backend
 
-FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그와 XLSX 보호본 생성을 제공합니다.
+FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그와 XLSX 보호본 생성·다운로드를 제공합니다.
 
 ## 엔드포인트
 
@@ -8,10 +8,38 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | ------ | --------- | ----------------------------- |
 | GET    | `/`       | 서비스 정보 + 상태            |
 | GET    | `/health` | `{"status": "ok"}` 헬스체크   |
+| GET    | `/logs/stats` | 기간별 통계 및 행동·등급·큐별 건수 |
+| GET    | `/logs/events` | 기간·등급·큐 필터와 커서 페이지 넘김 |
+| POST   | `/events/{event_id}/reason` | 민감 원문 전송 후 직원 사유 제출·저장 |
 | POST   | `/files/sanitize` | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
+| GET    | `/files/{work_id}/download` | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
+| POST   | `/files/{work_id}/restore` | 파일 매핑으로 AI 답변 복원; 만료 전까지 여러 번 |
+| GET    | `/cases` | 필수·선택 검토 및 종결 건 목록, 커서 페이지 이동 |
+| GET    | `/cases/{id}` | 이벤트 메타데이터와 판단·처리 이력 |
+| POST   | `/cases/{id}/close` | 위반·예외 인정·오탐으로 종결 |
+| POST   | `/cases/{id}/reopen` | 이전 이력을 유지하고 다시 열기 |
+| POST   | `/cases/close-bulk` | 선택 검토 건을 일괄 ‘문제 없음’으로 종결 |
+| GET    | `/policy/draft` | 저장된 정책 초안과 변경 목록, ETag 조회 |
+| PUT    | `/policy/draft` | If-Match로 동시 수정을 확인하고 초안 전체 저장 |
+| POST   | `/policy/publish` | 저장된 초안 또는 직접 전달한 payload 서명·발행 |
 
 파일 API의 요청·응답, 오류 코드, 내부 AI 전송 연결 방법은 [파일 API 문서](docs/file-api.md)를 참고하세요.
+검토 대상 기준, 요청·응답과 콘솔 연결 방법은 [보안팀 검토 API 문서](docs/case-api.md)를 참고하세요.
+검토 상태는 기존 `LOG_DB_PATH`에 영구 저장합니다. 인증 연결 전 처리자는 `unauthenticated`로 기록합니다.
 기존 텍스트·로그 API를 포함한 전체 명세는 서버의 `/docs`에서 확인할 수 있습니다.
+최근 7일 집계와 1,000건 이상의 목록 조회는 [로그 통계·페이지 넘김 문서](docs/log-stats-api.md)를 참고하세요.
+원문 전송 후 사유 제출 흐름, 추가 응답 필드와 재시도 규칙은 [직원 사유 API 문서](docs/event-reason-api.md)를 참고하세요.
+정책 초안 저장·충돌 처리·발행과 사건 규칙 연결 방법은 [정책 초안 API 문서](docs/policy-draft-api.md)를 참고하세요.
+
+### 로그 API 시험 이벤트
+
+연동 확인용 이벤트는 `POST /logs/events` 본문에 `"test": true`를 넣어 보냅니다. 저장과 큐 분류는 일반 이벤트와 같지만, 아래 조회에서는 기본으로 빠집니다.
+
+- `GET /logs/events`, `GET /logs/queues/{name}`, `GET /logs/stats`, `POST /logs/export`
+- 시험 이벤트까지 보려면 쿼리에 `include_test=true`를 붙입니다. 예: `GET /logs/stats?include_test=true`
+- 응답의 각 이벤트에는 `test` 필드(true/false)가 있습니다.
+
+`test` 필드가 생기기 전에 들어간 `request_id`가 `console-test-`로 시작하는 이벤트는 서버 시작 때 마이그레이션이 시험 이벤트로 표시합니다. 데이터는 지우지 않습니다.
 
 ## 로컬 실행
 
@@ -64,7 +92,8 @@ API 키·접근 토큰·비밀번호를 C로 차단합니다. 가명 복원이
 호출합니다. 파일명까지 검사하려면 업로드 경로에서 반드시 `filename`을 넘깁니다.
 파일과 프롬프트의 매핑을 통합하려면 같은 `LocalSession` 인스턴스를 연결해야 합니다.
 ID 문자열만 같게 지정해도 서로 다른 인스턴스의 매핑은 공유되지 않습니다.
-이번 파일 API는 파일별 매핑만 보관하며, 프롬프트 통합은 이후 AI 전송 단계에서 연결합니다.
+파일 API는 파일별 매핑을 보관하고, 보호본과 함께 보낼 질문은 `/process`의 `file_work_id`로
+그 매핑에 연결합니다([파일 API 문서](docs/file-api.md)).
 처리기가 구현할 함수는 두 개입니다.
 
 | 함수 | 입력과 반환값 |
@@ -125,6 +154,9 @@ LibreOffice Calc의 기본 계산 설정과 빈 머리글·바닥글 및 빈 사
 
 ## 환경 변수
 
+- `POLICY_DB_PATH`: 정책 초안·번들·적용 상태·PC 기록·모델을 저장할 SQLite 경로. 기본값 `data/policy.db`.
+- `POLICY_KEYS_DIR`: 정책 서명 개인키와 신뢰 공개키 디렉터리. 기본값 `keys/`.
+  운영에서는 DB와 기존 키를 모두 영구 경로에 보관하세요. [저장·이전 안내](docs/policy-persistence.md).
 - `ALLOWED_ORIGINS`: CORS 허용 오리진(콤마 구분). 기본값 `*`.
   배포 시 프론트엔드 주소로 지정하세요. 예: `https://your-app.vercel.app`
 

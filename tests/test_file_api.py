@@ -28,6 +28,9 @@ class DeterministicDetector:
                  for m in re.finditer("김민수|박영희", text)]
         return self.rules.detect(text) + names
 
+    def set_policy(self, **kwargs):  # /process applies the active policy first.
+        self.rules.set_policy(**kwargs)
+
 
 def workbook_bytes(edit=None):
     book = Workbook(iso_dates=True)
@@ -345,13 +348,20 @@ def test_cancelled_worker_keeps_slot_until_it_finishes(api, monkeypatch):
     assert upload(api).json()["status"] == "READY"
 
 
-def test_openapi_exposes_only_upload(api):
+def test_openapi_exposes_upload_and_binary_download(api):
     schema = api.client.get("/openapi.json").json()
     routes = [p for p in schema["paths"] if p.startswith("/files")]
-    assert routes == ["/files/sanitize"]
+    assert routes == ["/files/sanitize", "/files/{work_id}/download", "/files/{work_id}/restore"]
     body = schema["paths"][routes[0]]["post"]["requestBody"]
     assert body["required"]
     assert body["content"]["multipart/form-data"]["schema"]["required"] == ["file"]
+    download = schema["paths"][routes[1]]["get"]["responses"]
+    assert download["200"]["content"] == {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+            "schema": {"type": "string", "format": "binary"},
+        },
+    }
+    assert "404" in download
 
 
 @pytest.mark.parametrize("interrupt", ["disconnect", "cancel", "parser_error"])

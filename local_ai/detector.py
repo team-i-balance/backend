@@ -6,6 +6,13 @@ never silently downgraded to rules-only results.
 """
 from __future__ import annotations
 
+import os
+
+# onnxruntime (1.31, Linux) still connects to Microsoft 1DS telemetry during inference unless this
+# is set before onnxruntime is imported; disable_telemetry_events() alone is not enough (#13).
+# setdefault keeps a value the operator set explicitly.
+os.environ.setdefault('ORT_DISABLE_TELEMETRY', '1')
+
 import json
 import re
 from pathlib import Path
@@ -91,6 +98,75 @@ _GRADE_C_SLM_TYPES = frozenset({'CONFIDENTIAL', 'SENSITIVE'})
 # Left at SLM span edges after cutting around rule spans.
 _TRIM_CHARS = frozenset(' \t\r\n,.;:/·()[]')
 
+# These are heuristic candidates, not a complete Korean morphology parser.
+_JOSA_ANY = ('에게서', '한테서', '께서는', '으로부터', '에게', '한테', '께서', '에서', '까지', '부터', '님께', '의', '님', '씨', '께')
+_JOSA_FINAL = ('으로', '은', '을', '과', '이')
+_JOSA_NO_FINAL = ('는', '를', '와', '가')
+_COMPOUND_SURNAMES = ('남궁', '황보', '선우', '제갈', '사공', '서문', '독고', '동방')
+# Single-character particles that are also common name-final syllables.
+# For NAME spans, these are only stripped when the stem is long enough (≥4 chars)
+# to make it unlikely the character is part of the actual name.
+# e.g. "김다솜이" (3-char stem) must not be trimmed — "이" may be the last
+# syllable of the given name, not the subject particle — but "홍길동주이"
+# (4-char stem) is safely trimmed.
+_JOSA_AMBIGUOUS_SINGLE = frozenset({'이', '가'})
+
+
+def _trim_korean_particle(text: str, span: dict) -> dict:
+    """Trim a likely particle on AEGIS NAME/ADDRESS output conservatively.
+
+    AEGIS sometimes includes a trailing Korean particle (조사) inside the
+    detected span — e.g. "김민수의" instead of "김민수".  This causes two
+    problems:
+      1. The same person appears under two different keys in the pseudonym
+         mapping ("김민수" vs "김민수의"), producing separate aliases.
+      2. On restore the original particle is re-attached: "[이름_1]님께" →
+         "김민수의님께".
+
+    Strategy: only strip particles that are unlikely to be part of a genuine
+    name or address token (이름 끝 흔한 글자 — 나/로/랑/야/아/도/만 — 는 떼지 않음).
+    If removing the suffix would leave fewer than 2 Hangul characters the span
+    is returned unchanged (too risky to trim a one-syllable stem).
+    """
+    if span['type'] not in {'NAME', 'ADDRESS'}:
+        return span
+    start, end = span['start'], span['end']
+    # Guard: if the character immediately after the span is Hangul the model
+    # has already truncated mid-word — don't trim further.
+    if end < len(text) and '가' <= text[end] <= '힣':
+        return span
+    value = text[start:end]
+    for suffix in sorted(_JOSA_ANY + _JOSA_FINAL + _JOSA_NO_FINAL, key=len, reverse=True):
+        if not value.endswith(suffix):
+            continue
+        stem = value[:-len(suffix)]
+        if not stem or not ('가' <= stem[-1] <= '힣'):
+            continue
+        hangul_count = sum('가' <= ch <= '힣' for ch in stem)
+        # Require at least 3 Hangul chars for single-char suffixes (e.g. '의'),
+        # and at least 2 for longer ones, to avoid trimming too aggressively.
+        if hangul_count < (3 if len(suffix) == 1 else 2):
+            continue
+        # Compound surname + 1-char given name + 1-char particle: "남궁민이" →
+        # stem "남궁민" is 3 chars but "이" is a valid name-final syllable.
+        if span['type'] == 'NAME' and len(suffix) == 1 and len(value) == 4 and value.startswith(_COMPOUND_SURNAMES):
+            continue
+        has_final = (ord(stem[-1]) - 0xAC00) % 28 != 0
+        if suffix in _JOSA_FINAL and not has_final:
+            continue
+        if suffix in _JOSA_NO_FINAL and has_final:
+            continue
+        # For NAME spans, single-char particles that are also common name-final
+        # syllables ('이', '가') require a longer stem before we are confident
+        # the character is a particle and not part of the name itself.
+        # "박지훈이" and "김다솜이" are indistinguishable without context:
+        # the model may have correctly captured the full 4-syllable name.
+        # Require stem ≥ 4 Hangul chars for these ambiguous particles on NAME.
+        if span['type'] == 'NAME' and suffix in _JOSA_AMBIGUOUS_SINGLE and hangul_count < 4:
+            continue
+        return {**span, 'end': end - len(suffix)}
+    return span
+
 
 class DetectionError(RuntimeError):
     """The detector could not perform the requested complete check."""
@@ -110,6 +186,9 @@ class Detector:
         if not isinstance(threads, int) or isinstance(threads, bool) or threads < 1:
             raise ValueError('threads must be a positive integer')
         self.model_enabled = model_dir is not None or slm_dir is not None
+        # Detection types turned off by the active policy (types on/off). Empty
+        # by default, so behaviour is unchanged until a policy disables a type.
+        self._disabled_types: frozenset[str] = frozenset()
         self._tokenizer = self._session = self._np = None
         self._labels: dict[str, str] = {}
         self._slm = None
@@ -153,6 +232,17 @@ class Detector:
         except Exception as exc:
             raise DetectionError('Failed to load the local detection model') from exc
 
+    def set_policy(self, *, disabled_types=None) -> None:
+        """Apply active-policy toggles. Currently supports turning detection
+        types off (policy ``types`` on/off). Unknown types are ignored. Passing
+        None/empty restores default behaviour."""
+        self._disabled_types = frozenset(disabled_types or ())
+
+    def _apply_policy(self, spans: list[dict]) -> list[dict]:
+        if not self._disabled_types:
+            return spans
+        return [s for s in spans if s['type'] not in self._disabled_types]
+
     def detect(self, text: str) -> list[dict]:
         if not isinstance(text, str):
             raise TypeError('text must be a string')
@@ -162,7 +252,9 @@ class Detector:
             return found
         try:
             normalized_spans = self._detect_raw(normalized)
-            return _merge_overlaps(found + restore_detection_offsets(normalized_spans, offsets))
+            return self._apply_policy(
+                _merge_overlaps(found + restore_detection_offsets(normalized_spans, offsets))
+            )
         except Exception as exc:
             raise DetectionError('Normalized text detection failed; text was not fully checked') from exc
 
@@ -173,7 +265,7 @@ class Detector:
         structured = _structured_detections(text)
         found.extend(structured)
         if not self.model_enabled or not text:
-            return _merge_overlaps(found)
+            return self._apply_policy(_merge_overlaps(found))
         try:
             # Strong structured matches take precedence only when they fully
             # cover a model span. Partial overlaps still require review.
@@ -187,7 +279,7 @@ class Detector:
         except Exception as exc:
             # Return no partial result; avoid leaking input through exception text.
             raise DetectionError('Local model inference failed; text was not fully checked') from exc
-        return _merge_overlaps(found)
+        return self._apply_policy(_merge_overlaps(found))
 
     def _add_slm_spans(self, text: str, found: list[dict]) -> list[dict]:
         """Add SLM spans without cross-type overlaps (which pseudonymization rejects).
@@ -282,7 +374,8 @@ class Detector:
                     merged[-1]['_raw'] = 'NAME'
                 else:
                     merged.append(span)
-            results.extend({k: v for k, v in span.items() if k != '_raw'} for span in merged)
+            results.extend(_trim_korean_particle(text, {k: v for k, v in span.items() if k != '_raw'})
+                           for span in merged)
         return results
 
 

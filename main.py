@@ -5,18 +5,27 @@ import os
 
 from app.db import init_db
 from app.router import router as logs_router
+from app.reason_router import router as reason_router
 from app.process_router import router as process_router
 from app.file_router import router as file_router
+from app.policy_router import router as policy_router
+from app.case_router import router as case_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    from app.policy import store as policy_store
+
+    policy_store.initialize()
     from app.sessions import store
     from app.file_store import store as file_store
 
     store.start_sweeper()
     file_store.start()
+    from app.detectors import warm_up_in_background
+
+    warm_up_in_background()
     try:
         yield
     finally:
@@ -37,12 +46,16 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "ETag"],
 )
 
 
 app.include_router(logs_router)
+app.include_router(reason_router)
 app.include_router(process_router)
 app.include_router(file_router)
+app.include_router(policy_router)
+app.include_router(case_router)
 
 
 @app.get("/")
@@ -52,4 +65,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    # Detection coverage lets clients tell full checks from rules-only before sending text.
+    from app.detectors import detection_status
+
+    return {"status": "ok", **detection_status()}

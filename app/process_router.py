@@ -16,6 +16,10 @@ Flow:
                         -> restore this session's pseudonyms in an AI reply,
                            then release the work item.
 
+A question sent with an XLSX file passes that file's work_id as file_work_id.
+It is then numbered in the file's mapping (borrowed, never closed here), so the
+AI never sees one placeholder for two values and either restore covers both.
+
 Detector reuse: constructing a local_ai Detector builds a tokenizer and ONNX
 session, which is expensive and memory-heavy. We build each mode's detector
 once and share it across requests; only the per-work pseudonym state lives in
@@ -33,6 +37,8 @@ from app.detectors import (
     get_detector,
     reset_detectors as _reset_detectors,
 )
+from app.file_mapping import MappingClosed
+from app.file_store import store as file_store
 from app.grading import decide_grade
 from app.ingest import build_event, coverage_to_confidence
 from app.schemas import (
@@ -47,8 +53,10 @@ from app.schemas import (
     RestoreOut,
 )
 from app.sessions import store
+from local_ai.pseudonym import PlaceholderReuseError
 
 router = APIRouter(prefix="/process", tags=["process"])
+_FILE_WORK_GONE = "unknown or expired file_work_id"
 
 
 def _get_detector(rules_only: bool):
@@ -68,12 +76,31 @@ def _get_detector(rules_only: bool):
 @router.post("", response_model=ProcessOut)
 def process_text(body: ProcessIn):
     from local_ai.pipeline import LocalSession
+    from app.policy import store as policy_store
+    from app.policy_apply import apply_policy_to_detector
 
     detector = _get_detector(body.rules_only)
-    # The pseudonym mapping is per-work; the detector is shared.
-    session = LocalSession(detector)
+    # Apply the active policy's type toggles to the (shared) detector.
+    apply_policy_to_detector(detector, policy_store.current())
+    if body.file_work_id is None:
+        # The pseudonym mapping is per-work; the detector is shared.
+        session = LocalSession(detector)
+    else:
+        session = file_store.lend(body.file_work_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=_FILE_WORK_GONE)
     try:
         result = session.process(body.text)
+    except MappingClosed:
+        raise HTTPException(status_code=404, detail=_FILE_WORK_GONE) from None
+    except PlaceholderReuseError:
+        # Only a linked question can hit this: a placeholder copied from the
+        # protected file cannot be told apart from literal text, so fail closed.
+        session.close()
+        raise HTTPException(status_code=422, detail=(
+            "text contains a placeholder of the linked file; "
+            "write the original value instead"
+        )) from None
     except Exception:
         # Never leak request text via exception detail.
         session.close()
@@ -160,11 +187,16 @@ def restore(body: RestoreIn):
         )
     try:
         result = item.session.restore(body.text)
-        return RestoreOut(
-            text=result.text,
-            unknown=list(result.unknown),
-            blocked=list(result.blocked),
-        )
+    except MappingClosed:
+        # A question linked to a file work that has since ended.
+        raise HTTPException(
+            status_code=404, detail="unknown or expired work_id (the linked file work has ended)",
+        ) from None
     finally:
         # Restoration is the final step for this work item.
         item.session.close()
+    return RestoreOut(
+        text=result.text,
+        unknown=list(result.unknown),
+        blocked=list(result.blocked),
+    )

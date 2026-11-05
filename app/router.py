@@ -2,29 +2,36 @@
 
 Mounted under /logs in main.py.
 """
-from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
 from app import crud
 from app.crypto import encrypt_records, public_key_fingerprint
+from app.log_time import parse_utc
 from app.schemas import EventIn, EventOut, ExportResult, Stats
 
 router = APIRouter(prefix="/logs", tags=["logs"])
 
+_INCLUDE_TEST = Query(
+    default=False,
+    description="Include integration-test events (test=true). Default: excluded.",
+)
 
-def _validate_iso(value: Optional[str], field: str) -> None:
-    """Reject malformed date filters so they can't silently mis-filter."""
-    if value is None:
-        return
-    try:
-        datetime.fromisoformat(value)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field} must be an ISO8601 datetime, got: {value!r}",
-        )
+
+def _validate_period(start: Optional[str], end: Optional[str]) -> None:
+    bounds = {}
+    for field, value in (("start", start), ("end", end)):
+        if value is None:
+            continue
+        try:
+            bounds[field] = parse_utc(value)
+        except (ValueError, OverflowError) as exc:
+            raise HTTPException(
+                status_code=400, detail=f"{field} must be a valid ISO8601 datetime",
+            ) from exc
+    if start is not None and end is not None and bounds["start"] > bounds["end"]:
+        raise HTTPException(status_code=400, detail="start must be earlier than or equal to end")
 
 
 @router.post("/events", response_model=EventOut, status_code=201)
@@ -40,31 +47,47 @@ def get_events(
     start: Optional[str] = Query(default=None, description="ISO8601 lower bound"),
     end: Optional[str] = Query(default=None, description="ISO8601 upper bound"),
     limit: int = Query(default=100, ge=1, le=1000),
+    include_test: bool = _INCLUDE_TEST,
+    cursor: Optional[int] = Query(
+        default=None, ge=1, le=2**63 - 1, description="Last event ID from the previous page",
+    ),
 ):
-    _validate_iso(start, "start")
-    _validate_iso(end, "end")
+    _validate_period(start, end)
     return crud.list_events(
-        grade=grade, queue=queue, start=start, end=end, limit=limit
+        grade=grade, queue=queue, start=start, end=end, limit=limit, cursor=cursor,
+        include_test=include_test,
     )
 
 
 @router.get("/queues/{name}", response_model=list[EventOut])
-def get_queue(name: str, limit: int = Query(default=100, ge=1, le=1000)):
-    return crud.list_events(queue=name, limit=limit)
+def get_queue(
+    name: str,
+    limit: int = Query(default=100, ge=1, le=1000),
+    include_test: bool = _INCLUDE_TEST,
+):
+    return crud.list_events(queue=name, limit=limit, include_test=include_test)
 
 
 @router.get("/stats", response_model=Stats)
-def get_stats():
-    return crud.get_stats()
+def get_stats(
+    start: Optional[str] = Query(default=None, description="Inclusive ISO8601 lower bound"),
+    end: Optional[str] = Query(default=None, description="Inclusive ISO8601 upper bound"),
+    include_test: bool = _INCLUDE_TEST,
+):
+    _validate_period(start, end)
+    return crud.get_stats(start=start, end=end, include_test=include_test)
 
 
 @router.post("/export", response_model=ExportResult)
 def export_logs(
     queue: Optional[str] = None,
     limit: int = Query(default=1000, ge=1, le=10000),
+    include_test: bool = _INCLUDE_TEST,
 ):
     """Encrypt matching logs with the security team public key and write a file."""
-    records = crud.list_events(queue=queue, limit=limit)
+    records = crud.list_events(
+        queue=queue, limit=limit, include_test=include_test
+    )
     path = encrypt_records(records)
     return ExportResult(
         exported=len(records),

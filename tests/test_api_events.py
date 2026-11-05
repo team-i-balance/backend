@@ -23,7 +23,9 @@ def test_create_event_returns_record_with_queue(client):
 
 
 def test_health_and_root_still_work(client):
-    assert client.get("/health").json() == {"status": "ok"}
+    body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert body["detection"] in ("model", "rules_only")
     assert client.get("/").json()["service"] == "ibalance-backend"
 
 
@@ -38,7 +40,7 @@ def test_events_persist_and_list_newest_first(client):
 
 def test_filter_by_grade_and_queue(client):
     client.post("/logs/events", json=_event(grade="public_O", action="send_as_is"))
-    client.post("/logs/events", json=_event(grade="confidential_C", action="cancel",
+    client.post("/logs/events", json=_event(grade="confidential_C", action="send_as_is",
                                             detection_confidence="high"))
     only_public = client.get("/logs/events", params={"grade": "public_O"}).json()
     assert len(only_public) == 1
