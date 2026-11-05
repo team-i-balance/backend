@@ -39,6 +39,41 @@ class Queue(str, Enum):
     pre_warning = "pre_warning"
 
 
+class Decision(str, Enum):
+    """Per-item decision: how the value was handled."""
+    converted = "converted"    # sent as pseudonymized
+    reverted = "reverted"      # user reverted to original
+    raw = "raw"                # sent as-is (no masking)
+
+
+class EventItem(BaseModel):
+    """Per-detected-item detail for security team review.
+
+    Stores enough context to cluster repeated false-positive reports on the
+    same value (via value_hash) without ever storing the raw value itself.
+    """
+
+    type: str = Field(description="Detection type, e.g. 'NAME', 'PHONE'")
+    decision: Decision
+    reason: Optional[Reason] = Field(
+        default=None,
+        description="Per-item reason when it differs from the event-level reason",
+    )
+    # HMAC-SHA256(org_key, value): lets the security team cluster repeated
+    # false-positive reports for the same underlying value without storing it.
+    value_hash: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="HMAC-SHA256 hex of the detected value; used for FP clustering only",
+    )
+    # Masked preview shown in the console card, e.g. "윤*아", "******-*******".
+    preview: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Masked preview of the value for display (no raw content)",
+    )
+
+
 class EventIn(BaseModel):
     """Incoming runtime event. Body text is NOT accepted — only metadata.
 
@@ -59,6 +94,40 @@ class EventIn(BaseModel):
     # only this optional fingerprint (see rules.md section 6).
     content_hash: Optional[str] = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
 
+    # --- Context fields (issue #21) ------------------------------------------
+    # Identifiers for the submitting employee and channel. All optional to
+    # preserve backward compatibility; never store raw personal text here.
+    user_id: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="Employee ID or pseudonymous user identifier",
+    )
+    dept: Optional[str] = Field(
+        default=None,
+        max_length=128,
+        description="Department or team name",
+    )
+    target_ai: Optional[str] = Field(
+        default=None,
+        max_length=128,
+        description="AI system the message was destined for",
+    )
+    device_id: Optional[str] = Field(
+        default=None,
+        max_length=128,
+        description="Device or client identifier",
+    )
+    reason_text: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Free-text reason written by the employee (no raw PII)",
+    )
+    # Per-item decisions; allows different reason per detected value in one event.
+    items: list[EventItem] = Field(
+        default_factory=list,
+        description="Per-detected-item details for console display and FP clustering",
+    )
+
 
 class EventOut(BaseModel):
     id: int
@@ -74,6 +143,13 @@ class EventOut(BaseModel):
     restored: bool
     content_hash: Optional[str]
     queue: str
+    # Context fields (issue #21)
+    user_id: Optional[str] = None
+    dept: Optional[str] = None
+    target_ai: Optional[str] = None
+    device_id: Optional[str] = None
+    reason_text: Optional[str] = None
+    items: list[EventItem] = Field(default_factory=list)
 
 
 class Stats(BaseModel):
