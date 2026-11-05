@@ -52,6 +52,9 @@ GET /cases/INC-42
     "grade": "sensitive_S",
     "action": "send_as_is",
     "reason": null,
+    "reason_text": null,
+    "reason_requested_at": "2026-11-05T06:00:00+00:00",
+    "reason_at": null,
     "detection_confidence": "high",
     "detected_types": ["NAME"],
     "detected_count": 1,
@@ -84,8 +87,11 @@ GET /cases/INC-42
 ```
 
 - `event`는 기존 `/logs/events` 응답과 동일한 메타데이터입니다.
-  직원 사유는 현재 존재하는 `event.reason` 코드(`business_need`/`false_positive`/`null`)만
-  반환합니다. 직원이 작성한 사유 본문·원문·직원 이름·부서는 아직 이벤트에 없으며 만들어내지 않습니다.
+  직원 사유는 `event.reason` 코드(`business_need`/`false_positive`/`null`),
+  `event.reason_text` 본문, `event.reason_requested_at` 대기 시작 시각,
+  `event.reason_at` 제출 시각으로 읽습니다. 제출 방법은 [직원 사유 API](event-reason-api.md)를 참고하세요.
+  사유가 늦게 도착해도 기존 보안팀 결론과 처리 이력은 바뀌지 않습니다.
+  원문·직원 이름·부서는 아직 이벤트에 없으며 만들어내지 않습니다.
 - `status`는 `open` 또는 `closed`, 열린 건의 `close`는 `null`입니다.
 - `history`는 시간 순(이력 ID 오름차순)의 전체 종결·다시 열기 기록입니다.
   다시 열기 기록은 `conclusion`/`cause`/`memo`/`rule`이 모두 `null`입니다.

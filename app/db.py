@@ -56,10 +56,28 @@ CREATE INDEX IF NOT EXISTS idx_case_history_event ON case_history (event_id, id)
 
 
 def init_db() -> None:
-    """Create the data dir, DB file, and tables if missing."""
+    """Create tables and add reason tracking to existing event databases."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        # Serialize schema inspection + ALTER across concurrent server starts.
+        # reason_text is also used by event-context metadata (issue #21).
+        conn.execute("BEGIN IMMEDIATE")
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(event_log)")}
+        for name in ("reason_requested_at", "reason_at", "reason_text"):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE event_log ADD COLUMN {name} TEXT")
+        # Older rows have no independent request/submission timestamps. Use
+        # event creation time for their initial waiting state / initial reason.
+        conn.execute("""
+            UPDATE event_log SET reason_requested_at = created_at
+            WHERE grade = 'sensitive_S' AND action = 'send_as_is'
+              AND reason IS NULL AND reason_requested_at IS NULL
+        """)
+        conn.execute("""
+            UPDATE event_log SET reason_at = created_at
+            WHERE reason IS NOT NULL AND reason_at IS NULL
+        """)
 
 
 @contextmanager
