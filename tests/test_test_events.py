@@ -225,3 +225,14 @@ def test_test_flag_never_deletes(client):
     with get_conn() as conn:
         n = conn.execute("SELECT COUNT(*) AS c FROM event_log").fetchone()["c"]
     assert n == 1
+
+
+def test_test_events_never_become_cases(client):
+    real = client.post("/logs/events", json={"grade": "sensitive_S", "action": "send_as_is",
+                                              "detected_types": ["NAME"], "detected_count": 1}).json()
+    client.post("/logs/events", json={"grade": "sensitive_S", "action": "send_as_is", "test": True,
+                                      "detected_types": ["NAME"], "detected_count": 1})
+    items = client.get("/cases", params={"queue": "required"}).json()["items"]
+    assert [c["event"]["id"] for c in items] == [real["id"]]
+    assert items[0]["event"]["test"] is False
+    assert "is_test" not in items[0]["event"]
