@@ -1,0 +1,29 @@
+{
+  "description": "Labeled scenarios for queue-classification accuracy. Each case has an input event (metadata only) and the expected queue per rules.md. Add realistic cases here to track classification accuracy over time.",
+  "cases": [
+    {"id": "fp-01", "note": "오탐 신고 + 변환전송", "event": {"grade": "sensitive_S", "action": "send_transformed", "reason": "false_positive", "detection_confidence": "high", "detected_types": ["rrn"], "detected_count": 1}, "expected_queue": "detection_improve"},
+    {"id": "fp-02", "note": "오탐 + 취소", "event": {"grade": "sensitive_S", "action": "cancel", "reason": "false_positive", "detection_confidence": "medium"}, "expected_queue": "detection_improve"},
+    {"id": "fp-03", "note": "오탐 + 그대로전송(공개로 재판정)", "event": {"grade": "public_O", "action": "send_as_is", "reason": "false_positive"}, "expected_queue": "detection_improve"},
+    {"id": "fp-04", "note": "오탐 + 되돌림", "event": {"grade": "sensitive_S", "action": "revert_original", "reason": "false_positive", "reverted": true}, "expected_queue": "detection_improve"},
+
+    {"id": "bn-01", "note": "업무상 필요 + 원문전송", "event": {"grade": "confidential_C", "action": "revert_original", "reason": "business_need", "detected_types": ["contract"], "detected_count": 1}, "expected_queue": "violation_candidate"},
+    {"id": "bn-02", "note": "업무상 필요 + 취소", "event": {"grade": "sensitive_S", "action": "cancel", "reason": "business_need", "detection_confidence": "high"}, "expected_queue": "violation_candidate"},
+    {"id": "bn-03", "note": "업무상 필요 + 변환전송", "event": {"grade": "sensitive_S", "action": "send_transformed", "reason": "business_need"}, "expected_queue": "violation_candidate"},
+    {"id": "bn-04", "note": "업무상 필요 + 그대로전송", "event": {"grade": "sensitive_S", "action": "send_as_is", "reason": "business_need"}, "expected_queue": "violation_candidate"},
+
+    {"id": "rv-01", "note": "취소 + 확실(high), 사유없음 = 실제위반", "event": {"grade": "confidential_C", "action": "cancel", "detection_confidence": "high", "detected_types": ["secret_key"], "detected_count": 1}, "expected_queue": "real_violation"},
+    {"id": "rv-02", "note": "취소 + 확실(high), 민감", "event": {"grade": "sensitive_S", "action": "cancel", "detection_confidence": "high", "detected_types": ["rrn", "card"], "detected_count": 2}, "expected_queue": "real_violation"},
+
+    {"id": "pw-01", "note": "변환전송, 사유없음, medium", "event": {"grade": "sensitive_S", "action": "send_transformed", "detection_confidence": "medium", "detected_types": ["email"], "detected_count": 3}, "expected_queue": "pre_warning"},
+    {"id": "pw-02", "note": "취소지만 확실치 않음(low)", "event": {"grade": "sensitive_S", "action": "cancel", "detection_confidence": "low"}, "expected_queue": "pre_warning"},
+    {"id": "pw-03", "note": "취소, confidence 없음", "event": {"grade": "sensitive_S", "action": "cancel"}, "expected_queue": "pre_warning"},
+    {"id": "pw-04", "note": "그대로전송(공개), 사유없음", "event": {"grade": "public_O", "action": "send_as_is", "detected_count": 0}, "expected_queue": "pre_warning"},
+    {"id": "pw-05", "note": "되돌림, 사유없음", "event": {"grade": "sensitive_S", "action": "revert_original", "reverted": true}, "expected_queue": "pre_warning"},
+    {"id": "pw-06", "note": "변환전송 + high지만 사유없고 취소아님", "event": {"grade": "sensitive_S", "action": "send_transformed", "detection_confidence": "high", "detected_types": ["phone"], "detected_count": 1}, "expected_queue": "pre_warning"},
+
+    {"id": "pri-01", "note": "우선순위: 오탐이 취소+high를 이김", "event": {"grade": "confidential_C", "action": "cancel", "reason": "false_positive", "detection_confidence": "high"}, "expected_queue": "detection_improve"},
+    {"id": "pri-02", "note": "우선순위: 업무상필요가 취소+high를 이김", "event": {"grade": "confidential_C", "action": "cancel", "reason": "business_need", "detection_confidence": "high"}, "expected_queue": "violation_candidate"},
+    {"id": "pri-03", "note": "우선순위: 오탐이 변환전송보다 우선", "event": {"grade": "sensitive_S", "action": "send_transformed", "reason": "false_positive", "detection_confidence": "high"}, "expected_queue": "detection_improve"},
+    {"id": "pri-04", "note": "우선순위: 업무상필요가 변환전송보다 우선", "event": {"grade": "sensitive_S", "action": "send_transformed", "reason": "business_need"}, "expected_queue": "violation_candidate"}
+  ]
+}
