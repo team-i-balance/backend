@@ -72,8 +72,11 @@ def api(client, monkeypatch):
     detector = DeterministicDetector()
     monkeypatch.setattr(file_service, "get_detector", lambda _: detector)
     monkeypatch.setattr(file_service, "LocalSession", TrackedSession)
+    # Auth header from the client fixture, for raw ASGI / httpx calls below.
+    auth = client.headers.get("authorization")
     return SimpleNamespace(client=client, router=file_router, service=file_service,
-                           store=file_router.store, sessions=sessions, detector=detector)
+                           store=file_router.store, sessions=sessions, detector=detector,
+                           auth=auth)
 
 
 def upload(api, data=None, filename="입력.xlsx"):
@@ -234,6 +237,7 @@ def test_no_content_length_still_bounded_and_spool_closed(api, monkeypatch):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.client.app), base_url="http://test") as c:
             return await c.post("/files/sanitize", content=chunks(), headers={
                 "Content-Type": "multipart/form-data; boundary=boundary",
+                "Authorization": api.auth,
             })
 
     assert_failure(api, asyncio.run(run()), 413, "FILE_TOO_LARGE")
@@ -328,7 +332,7 @@ def test_cancelled_worker_keeps_slot_until_it_finishes(api, monkeypatch):
     monkeypatch.setattr(api.service.FileProcessingJob, "run", tracked_run)
 
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.client.app), base_url="http://test") as c:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.client.app), base_url="http://test", headers={"Authorization": api.auth}) as c:
             first = asyncio.create_task(c.post("/files/sanitize", files={"file": ("a.xlsx", workbook_bytes())}))
             try:
                 assert await asyncio.to_thread(entered.wait, 5)
@@ -402,7 +406,8 @@ def test_partial_upload_always_closes_spool(api, monkeypatch, interrupt):
         scope = dict(type="http", asgi={"version": "3.0"}, http_version="1.1",
                      method="POST", scheme="http", path="/files/sanitize",
                      raw_path=b"/files/sanitize", query_string=b"", root_path="",
-                     headers=[(b"content-type", b"multipart/form-data; boundary=boundary")],
+                     headers=[(b"content-type", b"multipart/form-data; boundary=boundary"),
+                              (b"authorization", api.auth.encode())],
                      client=("test", 1), server=("test", 80))
         task = asyncio.create_task(api.client.app(scope, receive, send))
         await asyncio.wait_for(waiting.wait(), 5)
@@ -426,7 +431,7 @@ def test_disconnect_after_processing_discards_published_work(api):
     async def run():
         request = httpx.Request("POST", "http://test/files/sanitize", files={
             "file": ("input.xlsx", workbook_bytes()),
-        })
+        }, headers={"Authorization": api.auth})
         data = request.read()
         messages = [{"type": "http.request", "body": data, "more_body": False}]
 

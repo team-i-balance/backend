@@ -26,6 +26,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel
 
+from app.auth import require_api, require_security
 from app.policy import (
     ActivePolicy,
     DEMO_KEY_ID,
@@ -83,13 +84,13 @@ def _info(active: ActivePolicy | None) -> PolicyInfo:
 
 
 # --- PC side ----------------------------------------------------------------
-@router.post("/deploy", response_model=DeployOut)
+@router.post("/deploy", response_model=DeployOut, dependencies=[Depends(require_api)])
 def deploy(body: DeployIn):
     accepted, reason = store.deploy(body.bundle)
     return DeployOut(accepted=accepted, reason=reason, policy=_info(store.current()))
 
 
-@router.get("/current", response_model=PolicyInfo)
+@router.get("/current", response_model=PolicyInfo, dependencies=[Depends(require_api)])
 def current():
     return _info(store.current())
 
@@ -106,7 +107,7 @@ def _draft_error(exc: DraftError) -> HTTPException:
     )
 
 
-@router.get("/draft", response_model=DraftOut)
+@router.get("/draft", response_model=DraftOut, dependencies=[Depends(require_security)])
 def get_draft(response: Response):
     state = store.draft()
     response.headers["ETag"] = state["etag"]
@@ -114,7 +115,7 @@ def get_draft(response: Response):
     return state
 
 
-@router.put("/draft", response_model=DraftOut)
+@router.put("/draft", response_model=DraftOut, dependencies=[Depends(require_security)])
 def put_draft(
     body: DraftIn,
     response: Response,
@@ -133,7 +134,7 @@ def put_draft(
     return state
 
 
-@router.post("/publish", response_model=PublishOut)
+@router.post("/publish", response_model=PublishOut, dependencies=[Depends(require_security)])
 def publish(
     response: Response,
     body: Optional[PublishIn] = None,
@@ -153,7 +154,7 @@ def publish(
     )
 
 
-@router.get("/latest")
+@router.get("/latest", dependencies=[Depends(require_api)])
 def latest(response: Response, if_none_match: str | None = Header(default=None)):
     stored = store.latest()
     if stored is None:
@@ -165,14 +166,14 @@ def latest(response: Response, if_none_match: str | None = Header(default=None))
     return stored.envelope
 
 
-@router.get("/acks", response_model=AckOut)
+@router.get("/acks", response_model=AckOut, dependencies=[Depends(require_security)])
 def acks(version: Optional[int] = Query(default=None)):
     # Without ?version: each device's last ack (legacy console view).
     # With ?version=N: only acks for N. Response shape is the same either way.
     return AckOut(ok=True, summary=store.ack_summary(version))
 
 
-@router.get("/history", response_model=list[HistoryItem])
+@router.get("/history", response_model=list[HistoryItem], dependencies=[Depends(require_security)])
 def history():
     return [
         HistoryItem(
@@ -185,21 +186,21 @@ def history():
     ]
 
 
-@router.get("/{version}/acks", response_model=VersionAcks)
+@router.get("/{version}/acks", response_model=VersionAcks, dependencies=[Depends(require_security)])
 def version_acks(version: int):
     if store.get_version(version) is None and not store.has_acks(version):
         raise HTTPException(status_code=404, detail="unknown version")
     return VersionAcks(version=version, **store.ack_summary(version))
 
 
-@router.post("/ack", response_model=AckOut)
+@router.post("/ack", response_model=AckOut, dependencies=[Depends(require_api)])
 def ack(body: AckIn):
     store.record_ack(body.device_id, body.version, body.status.value, body.reason)
     return AckOut(ok=True, summary=store.ack_summary())
 
 
 # --- model manifest ---------------------------------------------------------
-@router.post("/model/publish")
+@router.post("/model/publish", dependencies=[Depends(require_security)])
 def model_publish(body: ModelPublishIn):
     manifest = {
         "name": body.name,
@@ -216,7 +217,7 @@ def model_publish(body: ModelPublishIn):
     return {"published": True, "name": body.name, "version": body.version}
 
 
-@router.get("/model/latest")
+@router.get("/model/latest", dependencies=[Depends(require_api)])
 def model_latest():
     manifest = store.model_manifest()
     if manifest is None:
@@ -225,7 +226,7 @@ def model_latest():
 
 
 # --- audit: specific version (declared last so it doesn't shadow the others) -
-@router.get("/{version}")
+@router.get("/{version}", dependencies=[Depends(require_api)])
 def get_version(version: int):
     stored = store.get_version(version)
     if stored is None:

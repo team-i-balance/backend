@@ -3,6 +3,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
+from fastapi import Depends
+
+from app.auth import require_api
+from app.auth_router import router as auth_router
 from app.db import init_db
 from app.router import router as logs_router
 from app.reason_router import router as reason_router
@@ -35,25 +39,29 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="iBalance Backend", version="0.1.0", lifespan=lifespan)
 
-# CORS: allow the frontend (Vercel) to call the health check.
-# Set ALLOWED_ORIGINS to a comma-separated list in production, e.g.
-#   ALLOWED_ORIGINS="https://your-app.vercel.app"
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+# CORS. Set ALLOWED_ORIGINS to a comma-separated list of allowed frontends.
+# We authenticate with bearer tokens (not cookies), so credentials are OFF;
+# that also avoids the unsafe "*" + credentials combination.
+allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in allowed_origins],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Content-Disposition", "ETag"],
+    allow_origins=allowed_origins or ["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "If-None-Match"],
+    # ETag for policy caching; Content-Disposition for file downloads.
+    expose_headers=["ETag", "Content-Disposition"],
 )
 
 
+app.include_router(auth_router)  # public: issues tokens
+# logs_router and policy_router carry per-route auth (mixed scopes) inside them.
 app.include_router(logs_router)
-app.include_router(reason_router)
-app.include_router(process_router)
-app.include_router(file_router)
+# /process*, /files/*, and /reasons require an api (or security) token.
+app.include_router(reason_router, dependencies=[Depends(require_api)])
+app.include_router(process_router, dependencies=[Depends(require_api)])
+app.include_router(file_router, dependencies=[Depends(require_api)])
 app.include_router(policy_router)
 app.include_router(case_router)
 

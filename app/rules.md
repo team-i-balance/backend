@@ -180,3 +180,37 @@ PC 측:
 
 > 규칙(`rules`) 기반 신규 탐지(SLM 커스텀 규칙)는 SLM 모델 영역이라 범위 밖.
 > 여기서는 정규식 탐지 유형 on/off까지 적용한다.
+
+## 11. 인증·CORS (이슈 #10)
+
+### 토큰 인증 (항상 강제)
+
+Bearer 토큰으로 보호한다. 토큰이 없거나 유효하지 않으면 401, 유효하지만
+권한(scope)이 부족하면 403.
+
+| scope | 대상 엔드포인트 |
+| --- | --- |
+| `api` | `POST /process*`, `POST /files/*`, `POST /logs/events`, `POST /policy/deploy`, `POST /policy/ack`, 정책 읽기(`GET /policy/current|latest|{version}|model/latest`) |
+| `security` | 로그 조회·내보내기(`GET /logs/*`, `POST /logs/export`), `GET /policy/acks`, 정책 쓰기(`POST /policy/publish`, `POST /policy/model/publish`) |
+
+- security 토큰은 api scope도 만족한다(상위 포함).
+- 토큰 출처: 환경변수 `API_TOKENS` / `SECURITY_TOKENS`(콤마 구분) + 런타임
+  발급.
+- `GET /health`, `GET /`, `POST /auth/dev-token`은 공개.
+
+### 토큰 발급 ("스킵" 버튼)
+
+`POST /auth/dev-token {scope}` → 즉석 Bearer 토큰 발급. 수동 토큰 설정을
+건너뛰고 싶을 때 쓴다. `DISABLE_DEV_TOKEN=1`이면 비활성(운영에서 잠금).
+
+### CORS
+
+Bearer 토큰 기반이라 **쿠키를 쓰지 않으므로 `allow_credentials=False`**.
+`ALLOWED_ORIGINS`로 허용 오리진을 지정한다. 허용 메서드는 GET/POST/OPTIONS,
+허용 헤더는 Authorization·Content-Type·If-None-Match, ETag를 노출한다.
+
+### HTTPS
+
+운영/시연 서버는 uvicorn을 `127.0.0.1`에만 바인딩하고 리버스 프록시에서 TLS를
+종료한다. 백엔드 도메인이 없으므로 시연은 자체서명 인증서를 쓴다(브라우저
+경고가 뜨지만 전송 구간은 암호화된다).

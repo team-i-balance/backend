@@ -4,9 +4,10 @@ Mounted under /logs in main.py.
 """
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app import crud
+from app.auth import require_api, require_security
 from app.crypto import encrypt_records, public_key_fingerprint
 from app.log_time import parse_utc
 from app.schemas import EventIn, EventOut, ExportResult, Stats
@@ -34,13 +35,19 @@ def _validate_period(start: Optional[str], end: Optional[str]) -> None:
         raise HTTPException(status_code=400, detail="start must be earlier than or equal to end")
 
 
-@router.post("/events", response_model=EventOut, status_code=201)
+@router.post(
+    "/events", response_model=EventOut, status_code=201,
+    dependencies=[Depends(require_api)],
+)
 def create_event(event: EventIn):
     """Ingest one runtime event. Classifies into a queue on insert."""
     return crud.insert_event(event)
 
 
-@router.get("/events", response_model=list[EventOut])
+@router.get(
+    "/events", response_model=list[EventOut],
+    dependencies=[Depends(require_security)],
+)
 def get_events(
     grade: Optional[str] = None,
     queue: Optional[str] = None,
@@ -59,7 +66,10 @@ def get_events(
     )
 
 
-@router.get("/queues/{name}", response_model=list[EventOut])
+@router.get(
+    "/queues/{name}", response_model=list[EventOut],
+    dependencies=[Depends(require_security)],
+)
 def get_queue(
     name: str,
     limit: int = Query(default=100, ge=1, le=1000),
@@ -68,7 +78,7 @@ def get_queue(
     return crud.list_events(queue=name, limit=limit, include_test=include_test)
 
 
-@router.get("/stats", response_model=Stats)
+@router.get("/stats", response_model=Stats, dependencies=[Depends(require_security)])
 def get_stats(
     start: Optional[str] = Query(default=None, description="Inclusive ISO8601 lower bound"),
     end: Optional[str] = Query(default=None, description="Inclusive ISO8601 upper bound"),
@@ -78,7 +88,10 @@ def get_stats(
     return crud.get_stats(start=start, end=end, include_test=include_test)
 
 
-@router.post("/export", response_model=ExportResult)
+@router.post(
+    "/export", response_model=ExportResult,
+    dependencies=[Depends(require_security)],
+)
 def export_logs(
     queue: Optional[str] = None,
     limit: int = Query(default=1000, ge=1, le=10000),

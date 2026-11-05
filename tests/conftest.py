@@ -35,6 +35,32 @@ def client(tmp_path, monkeypatch):
 
     from fastapi.testclient import TestClient
     import main
+    import app.auth as auth
+
+    importlib.reload(main)
+    # Auth is always enforced. Give the default client a security token (which
+    # also satisfies api-scope routes) so existing tests keep working. Tests
+    # that exercise auth itself use the `anon_client` fixture below.
+    token = auth.issue_token("security")
+    with TestClient(main.app) as c:
+        c.headers.update({"Authorization": f"Bearer {token}"})
+        yield c
+
+
+@pytest.fixture()
+def anon_client(tmp_path, monkeypatch):
+    """A TestClient with NO auth header, for testing auth enforcement."""
+    monkeypatch.setenv("LOG_DB_PATH", str(tmp_path / "events.db"))
+    monkeypatch.setenv("LOG_KEYS_DIR", str(tmp_path / "keys"))
+    monkeypatch.setenv("LOG_EXPORT_DIR", str(tmp_path / "exports"))
+    monkeypatch.setenv("POLICY_KEYS_DIR", str(tmp_path / "policy_keys"))
+
+    for name in list(sys.modules):
+        if name == "main" or name == "app" or name.startswith("app."):
+            del sys.modules[name]
+
+    from fastapi.testclient import TestClient
+    import main
 
     importlib.reload(main)
     with TestClient(main.app) as c:
