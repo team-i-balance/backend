@@ -18,6 +18,12 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
+# Tests run with auth bypassed (AUTH_DISABLED=1) so the suite doesn't need to
+# thread tokens through every call, including subprocess-spawned TestClients
+# (os.environ is inherited). Production never sets this. The auth-enforcement
+# tests (anon_client) turn it back off to verify 401/403 behaviour.
+os.environ.setdefault("AUTH_DISABLED", "1")
+
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
@@ -58,6 +64,9 @@ def anon_client(tmp_path, monkeypatch):
     for name in list(sys.modules):
         if name == "main" or name == "app" or name.startswith("app."):
             del sys.modules[name]
+
+    # Enforce auth for the enforcement tests (undo the session-wide bypass).
+    monkeypatch.setenv("AUTH_DISABLED", "0")
 
     from fastapi.testclient import TestClient
     import main

@@ -48,8 +48,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins or ["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "If-None-Match"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "If-None-Match", "If-Match"],
     # ETag for policy caching; Content-Disposition for file downloads.
     expose_headers=["ETag", "Content-Disposition"],
 )

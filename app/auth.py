@@ -61,6 +61,14 @@ def dev_token_enabled() -> bool:
     return os.getenv("DISABLE_DEV_TOKEN", "") not in ("1", "true", "True")
 
 
+def _auth_disabled() -> bool:
+    """Test/dev bypass. When AUTH_DISABLED=1, all auth checks pass.
+
+    Production never sets this, so enforcement stays on there.
+    """
+    return os.getenv("AUTH_DISABLED", "") in ("1", "true", "True")
+
+
 def _token_from(creds: HTTPAuthorizationCredentials | None) -> str:
     if creds is None or (creds.scheme or "").lower() != "bearer" or not creds.credentials:
         raise HTTPException(status_code=401, detail="missing bearer token")
@@ -69,6 +77,8 @@ def _token_from(creds: HTTPAuthorizationCredentials | None) -> str:
 
 def require_api(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> None:
     """Allow api OR security tokens."""
+    if _auth_disabled():
+        return
     token = _token_from(creds)
     if token in _valid_api_tokens() or token in _valid_security_tokens():
         return
@@ -81,6 +91,8 @@ def require_security(creds: HTTPAuthorizationCredentials | None = Depends(_beare
     401 if the token is not recognized at all; 403 if it is a valid api token
     that simply lacks security scope.
     """
+    if _auth_disabled():
+        return
     token = _token_from(creds)
     if token in _valid_security_tokens():
         return

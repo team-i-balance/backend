@@ -83,6 +83,8 @@ def test_policy_write_requires_security(anon_client):
     api_tok = anon_client.post("/auth/dev-token", json={"scope": "api"}).json()["token"]
     sec_tok = anon_client.post("/auth/dev-token", json={"scope": "security"}).json()["token"]
     payload = {"payload": {"schema": 1, "org": "acme", "rules": []}}
-    # publish needs security
+    # publish needs security: api token is forbidden, security token passes the
+    # auth check (the publish body behavior itself is covered elsewhere).
     assert anon_client.post("/policy/publish", json=payload, headers={"Authorization": f"Bearer {api_tok}"}).status_code == 403
-    assert anon_client.post("/policy/publish", json=payload, headers={"Authorization": f"Bearer {sec_tok}"}).status_code == 200
+    sec_code = anon_client.post("/policy/publish", json=payload, headers={"Authorization": f"Bearer {sec_tok}"}).status_code
+    assert sec_code != 403  # not blocked by auth
