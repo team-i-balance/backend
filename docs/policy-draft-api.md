@@ -76,7 +76,7 @@ dict, exclude`와 추가 필드를 그대로 보존합니다. 서버가 UI 상�
 - 초안 ETag 계산에 포함되므로 이 칸만 바꿔도 ETag가 바뀌고, 동시 수정 검사를 받습니다.
 - 발행은 초안을 비우지만 `console_state`는 남깁니다. 발행 직후 초안을 다시 저장하는 우회는
   필요 없습니다. 다음 `PUT /policy/draft`가 새 값으로 대체합니다.
-- payload 최상위에 `console` 키를 두면 발행이 `422 POLICY_PAYLOAD_CONSOLE_FORBIDDEN`으로
+- payload 최상위에 `console` 또는 `console_state` 키를 두면 발행이 `422 POLICY_PAYLOAD_CONSOLE_FORBIDDEN`으로
   거부됩니다(아래 발행 절 참고). 예전 방식으로 `payload.console`을 저장한 초안은 그 키를
   `console_state`로 옮겨 다시 저장한 뒤 발행합니다.
 
@@ -119,7 +119,7 @@ If-Match: "sha256:마지막 저장에서 받은 값"
 **서명 번들 저장과 초안 삭제를 하나의 트랜잭션**으로 처리하므로 서명·DB 실패 시 초안과
 이전 발행 상태가 남습니다. PC 적용은 계속 별도의 `/policy/deploy` 단계입니다.
 
-- 본문이 있든 없든 발행할 payload 최상위에 `console` 키가 있으면
+- 본문이 있든 없든 발행할 payload 최상위에 `console` 또는 `console_state` 키가 있으면
   `422 POLICY_PAYLOAD_CONSOLE_FORBIDDEN`이며, 버전·번들·초안 모두 바뀌지 않습니다.
   서버가 키를 몰래 지우지 않으므로 콘솔이 payload를 고쳐 다시 저장·발행해야 합니다.
 - 저장된 초안 없이 본문 없는 발행을 요청하면, 현재 ETag를 보냈을 때 `409 NO_POLICY_DRAFT`입니다.
@@ -137,7 +137,7 @@ If-Match: "sha256:마지막 저장에서 받은 값"
 1. 정책 화면 시작 시 `/policy/latest` 대신 `/policy/draft`를 읽어 payload·변경 목록·
    `console_state`를 복원합니다. 평문 목록은 `console_state`에서만 읽습니다.
 2. 설정 변경마다 전체 `{payload, changes, console_state}`를 `If-Match`와 함께 저장합니다.
-   payload에는 해시만 넣고 `console` 키를 두지 않습니다. 평문은 `console_state`에만 둡니다. 연속 변경은
+   payload에는 해시만 넣고 `console`·`console_state` 키를 두지 않습니다. 평문은 `console_state`에만 둡니다. 연속 변경은
    한 콘솔 안에서 저장 요청을 순서대로 보내고 직전 성공 응답의 ETag를 사용합니다.
 3. 저장 성공 응답을 화면 상태로 반영합니다. 실패한 저장을 완료로 표시하지 않습니다.
 4. 발행 버튼은 진행 중인 저장이 끝난 뒤 현재 ETag로 본문 없는 `/policy/publish`를 호출합니다.

@@ -420,11 +420,13 @@ def test_console_state_survives_new_process(client):
     assert restored == draft(client)
 
 
+@pytest.mark.parametrize("key", ["console", "console_state"])
 @pytest.mark.parametrize("direct", [False, True])
-def test_publish_rejects_console_key_in_payload(client, direct):
+def test_publish_rejects_console_key_in_payload(client, direct, key):
     from app.policy import store
 
-    leaked = {**payload(), "console": {"dict": [SECRET_WORD]}}
+    # "console_state" misplaced inside payload must not be signed either (PR #52 review).
+    leaked = {**payload(), key: {"dict": [{"word": SECRET_WORD}]}}
     if direct:
         before = draft(client)
         response = client.post("/policy/publish", json={"payload": leaked})

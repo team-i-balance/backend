@@ -6,8 +6,9 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 
-# Top-level payload key that once carried console plaintext; never signable.
-FORBIDDEN_PAYLOAD_KEYS = ("console",)
+# Top-level payload keys for console plaintext (legacy "console" and a misplaced
+# "console_state"); never signable.
+FORBIDDEN_PAYLOAD_KEYS = ("console", "console_state")
 
 
 class DraftError(Exception):
