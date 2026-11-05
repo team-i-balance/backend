@@ -244,6 +244,7 @@ def test_model_configuration_required(api, monkeypatch):
     reset_detectors()
     monkeypatch.setattr(api.service, "get_detector", get_detector)
     monkeypatch.delenv("LOCAL_PII_MODEL_DIR", raising=False)
+    monkeypatch.delenv("LOCAL_SLM_MODEL_DIR", raising=False)
     assert_failure(api, upload(api), 503, "MODEL_UNAVAILABLE")
     monkeypatch.setenv("LOCAL_PII_MODEL_DIR", "/missing/model/private-path")
     response = upload(api)

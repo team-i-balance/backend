@@ -39,3 +39,29 @@ printf '문의는 user@example.com\n' | python -m local_ai --rules-only
 사업자번호는 하이픈 형태와 검증 숫자를 확인한다. 하이픈 없는 10자리 번호는 앞쪽 같은 줄의 사업자번호 문맥도 필요하다. 검증 숫자는 실제 사업자 등록 여부를 뜻하지 않는다. API 키는 `api_key` 대입, `access_token` 대입, `Authorization: Bearer` 값과 `sk-`, `sk-proj-`, `ghp_`로 시작하는 일부 형식을 검사한다. 그 밖의 키 형식이나 동적인 코드 표현은 탐지하지 못할 수 있다.
 
 `LocalSession.restore(text)`는 현재 작업에서 발급한 가명만 복원하고 `text`, `unknown`, `blocked`를 반환한다. API 키, 액세스 토큰, 비밀번호는 기본적으로 복원하지 않는다. 모르는 가명은 유지하며, 텍스트의 가명이 다른 작업에서 생성된 것인지 자체적으로 구별할 수 없으므로 호출자가 올바른 세션을 선택해야 한다. `close()` 후에는 복원할 수 없다. 사업자번호 표기에 하이픈 유무가 다르면 별도 원문 값으로 취급한다.
+
+## 기밀·비정형 개인정보 SLM (`local_ai/slm`)
+
+회사 기밀 규칙(정책)과 이름·주소·개인 민감정보를 찾는 로컬 SLM(GLiNER 미세조정, [team-i-balance/slm](https://github.com/team-i-balance/slm))을 선택적으로 붙인다.
+모델 폴더는 저장소에 없고, 실행 중 다운로드하지 않는다.
+
+```bash
+python -m pip install -r local_ai/requirements-slm.txt
+export LOCAL_SLM_MODEL_DIR=/path/to/slm-v2-trim        # gliner_config.json 이 있는 폴더
+export LOCAL_SLM_POLICY=/path/to/policy.json           # 없으면 local_ai/slm/policy.example.json (가상 회사 예시)
+```
+
+`Detector(model_dir, slm_dir=..., slm_policy=...)` 처럼 AEGIS 모델과 함께 또는 단독으로 쓴다. `/process` 는 `LOCAL_PII_MODEL_DIR` 와 `LOCAL_SLM_MODEL_DIR` 중 하나만 있어도 전체 탐지 모드를 연다.
+
+| 탐지 유형 | 출처 | 등급 (`app/grading.py`) |
+|---|---|---|
+| `NAME`, `ADDRESS` | 고정 라벨 | S |
+| `SENSITIVE` | 고정 라벨: 특정인의 건강·징계·종교·범죄 경력 등 | C |
+| `CONFIDENTIAL` | 정책 규칙 중 `grade: "C"` | C |
+| `INTERNAL` | 정책 규칙 중 `grade: "S"` | S |
+
+- 모델은 "어느 구간이 어느 규칙에 해당하는지"만 찾고, 등급은 보안팀 정책의 규칙 grade 로 정해진다. 새 규칙은 정책 파일만 바꾸면 재학습 없이 적용된다 (규칙 `label` 은 15자 이내 명사구)
+- 겹치는 구간은 더 강한 유형(PASSWORD > API_KEY > ACCESS_TOKEN > CONFIDENTIAL > SENSITIVE > INTERNAL > ADDRESS > NAME > 기타)으로 합친다
+- API 키·토큰 구간은 언제나 그대로 두고 SLM 구간을 그 주변으로 자른다. 전화·이메일·사업자번호도 그대로 두되, C 등급 SLM 구간(CONFIDENTIAL·SENSITIVE)이 덮으면 그 안에 흡수해 정책 등급을 유지한다
+- 성능(합성 평가셋 719문장, 기준값 기밀 0.45 / 개인정보 0.35): 기밀 재현율 90.2%, 이름·주소 100%, 민감정보 89%, 오탐 문장률 8.1%, 등급 정확도 90%, 문장당 약 80ms(M5 CPU). 합성 데이터라 실제 입력에서는 더 낮을 수 있다
+- 실제 모델 테스트: `LOCAL_SLM_MODEL_DIR=... python -m pytest tests/test_slm_adapter.py`
