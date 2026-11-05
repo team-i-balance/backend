@@ -7,9 +7,8 @@ from uuid import uuid4
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import Cell
 from openpyxl.utils import get_column_letter
-from openpyxl.utils.datetime import CALENDAR_MAC_1904
 
-from .number_format import day_zero_value, display_policy, format_labels
+from .number_format import display_policy, format_labels, numeric_value
 from .package import MAX_GRID, RejectedFile, inspect_package
 
 Grade = Literal["O", "S", "C"]
@@ -123,13 +122,17 @@ def read_xlsx(data, filename=None):
                         scan.comments += 1
                         scan.segments.append(Segment(key + ":comment", cell.comment.text))
                         scan.segments.append(Segment(key + ":author", cell.comment.author or ""))
+                    raw_numeric = serials.get((cell.row, cell.column))
+                    if raw_numeric is not None:
+                        fmt = cell.number_format
+                        cell.value = numeric_value(raw_numeric, fmt, book.epoch)
+                        # Assigning a datetime can install openpyxl's default
+                        # date format. Keep the source conditions for visibility.
+                        cell.number_format = fmt
                     if cell.value is None:
                         continue
                     if cell.data_type in {"e", "f"}:
                         raise RejectedFile("UNSUPPORTED_FEATURE")
-                    raw_numeric = serials.get((cell.row, cell.column))
-                    if book.epoch == CALENDAR_MAC_1904 and raw_numeric is not None and 0 <= float(raw_numeric) < 1:
-                        cell.value = day_zero_value(raw_numeric, cell.number_format)
                     export = visible and cell.row not in hidden_rows and cell.column not in hidden_cols
                     hidden, safe_format = display_policy(cell.value, cell.number_format, raw_numeric)
                     scan.unsupported_format |= safe_format is None

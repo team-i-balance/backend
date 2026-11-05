@@ -6,6 +6,7 @@ import operator
 import re
 
 from openpyxl.utils.datetime import CALENDAR_MAC_1904, from_excel
+from openpyxl.styles.numbers import is_date_format, is_timedelta_format
 
 from .package import RejectedFile
 
@@ -164,3 +165,22 @@ def day_zero_value(raw, fmt):
     if calendar:
         return datetime.combine(CALENDAR_MAC_1904.date(), value) if isinstance(value, time) else value
     return value.time() if isinstance(value, datetime) else value
+
+
+def numeric_value(raw, fmt, epoch):
+    """Resolve stored numbers from their active section before inspecting them.
+
+    openpyxl's load-time classification uses the first format section, even
+    when a condition selects a different one. Always start from the raw XML
+    number so an inactive date section cannot corrupt the processor input.
+    """
+    serial = float(raw) if any(c in raw for c in ".Ee") else int(raw)
+    if epoch == CALENDAR_MAC_1904 and 0 <= serial < 1:
+        return day_zero_value(raw, fmt)
+    section = active_section(fmt, serial)
+    if not is_date_format(section):
+        return serial
+    try:
+        return from_excel(serial, epoch, timedelta=is_timedelta_format(section))
+    except (ValueError, OverflowError):
+        raise RejectedFile("UNSUPPORTED_FEATURE") from None
