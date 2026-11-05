@@ -34,8 +34,8 @@ def insert_event(event: EventIn) -> dict:
             INSERT INTO event_log (
                 created_at, request_id, grade, action, reason,
                 detection_confidence, detected_types, detected_count,
-                reverted, restored, content_hash, queue
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                reverted, restored, content_hash, queue, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -52,6 +52,7 @@ def insert_event(event: EventIn) -> dict:
                 int(event.restored),
                 event.content_hash,
                 queue.value,
+                event.source.value,
             ),
         )
         new_id = cur.lastrowid

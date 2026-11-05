@@ -69,6 +69,9 @@ def init_db() -> None:
         for name in ("reason_requested_at", "reason_at", "reason_text"):
             if name not in columns:
                 conn.execute(f"ALTER TABLE event_log ADD COLUMN {name} TEXT")
+        if "source" not in columns:
+            # Which flow produced the event (issue #32); all earlier rows are text events.
+            conn.execute("ALTER TABLE event_log ADD COLUMN source TEXT NOT NULL DEFAULT 'text'")
         # Older rows have no independent request/submission timestamps. Use
         # event creation time for their initial waiting state / initial reason.
         conn.execute("""

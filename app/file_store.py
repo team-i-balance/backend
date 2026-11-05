@@ -1,16 +1,18 @@
 """Bounded, process-local ownership of protected files and their mappings."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from app.file_schemas import FileSummary
-from app.schemas import Grade
+from app.schemas import Action, Grade
 
 if TYPE_CHECKING:
+    from app.file_events import FileEvent
     from local_ai.pipeline import LocalSession
 
 
@@ -28,6 +30,8 @@ class FileWorkItem:
     expires_at: datetime
     deadline: float = field(repr=False)
     downloaded: bool = False
+    # What the security log records about this work (#32); None is never logged.
+    event: FileEvent | None = field(default=None, repr=False)
 
     def close(self) -> None:
         try:
@@ -36,20 +40,32 @@ class FileWorkItem:
             self.file_bytes = b""
 
 
+class Download(NamedTuple):
+    data: bytes
+    event: FileEvent | None
+
+
 class FileWorkStore:
     """add transfers ownership on success; take transfers it to the caller.
 
     take_download consumes only the file bytes, leaving the session until expiry.
     take is internal, not an authorization check. A future AI route must check
     access before taking a work item, and close it in finally after use.
+    on_expired receives the event of each work that expired before its copy was
+    downloaded. Only sweep() calls it, outside the lock, ignoring its errors: add
+    runs under the processing job's lock and discard on the event loop, so no
+    request path waits for the event log.
     """
 
     def __init__(self, *, ttl_seconds=600, max_items=20,
-                 max_bytes=64 * 1024 * 1024, sweep_interval=60):
+                 max_bytes=64 * 1024 * 1024, sweep_interval=60,
+                 on_expired: Callable[[FileEvent], None] | None = None):
         self._ttl = ttl_seconds
         self._max_items = max_items
         self._max_bytes = max_bytes
         self._sweep_interval = sweep_interval
+        self._on_expired = on_expired
+        self._expired: list[FileEvent] = []  # Waiting for the next sweep().
         self._items: dict[str, FileWorkItem] = {}
         self._bytes = 0
         self._lock = threading.Lock()
@@ -57,7 +73,7 @@ class FileWorkStore:
         self._thread: threading.Thread | None = None
         self._closed = False
 
-    def add(self, *, work_id, file_bytes, session, grade, summary) -> FileWorkItem:
+    def add(self, *, work_id, file_bytes, session, grade, summary, event=None) -> FileWorkItem:
         with self._lock:
             self._purge_locked()
             if (self._closed or len(self._items) >= self._max_items
@@ -68,7 +84,7 @@ class FileWorkStore:
             item = FileWorkItem(
                 work_id, file_bytes, session, grade, summary,
                 datetime.now(timezone.utc) + timedelta(seconds=self._ttl),
-                time.monotonic() + self._ttl,
+                time.monotonic() + self._ttl, event=event,
             )
             self._items[work_id] = item
             self._bytes += len(file_bytes)
@@ -80,7 +96,7 @@ class FileWorkStore:
             self._purge_locked()
             return self._pop_locked(work_id)
 
-    def take_download(self, work_id: str) -> bytes | None:
+    def take_download(self, work_id: str) -> Download | None:
         """Claim a copy once without consuming its restoration mapping or TTL."""
         with self._lock:
             self._purge_locked()
@@ -91,7 +107,7 @@ class FileWorkStore:
             item.downloaded = True
             item.file_bytes = b""
             self._bytes -= len(data)
-            return data
+            return Download(data, item.event)
 
     def discard(self, work_id: str) -> None:
         with self._lock:
@@ -115,7 +131,22 @@ class FileWorkStore:
     def _purge_locked(self):
         now = time.monotonic()
         for work_id in [k for k, v in self._items.items() if v.deadline <= now]:
+            item = self._items[work_id]
+            if self._on_expired is not None and item.event is not None and not item.downloaded:
+                self._expired.append(item.event)
             self._discard_locked(work_id)
+
+    def sweep(self) -> None:
+        """Purge expired work and report what expired before its download."""
+        with self._lock:
+            self._purge_locked()
+            expired, self._expired = self._expired, []
+        for event in expired:
+            try:
+                self._on_expired(event)
+            except Exception:
+                # Keep sweeping; never log sensitive exceptions.
+                pass
 
     def start(self) -> None:
         with self._lock:
@@ -130,11 +161,11 @@ class FileWorkStore:
 
     def _sweep(self):
         while not self._stop.wait(self._sweep_interval):
-            with self._lock:
-                self._purge_locked()
+            self.sweep()
 
     def close(self) -> None:
         self._stop.set()
+        self.sweep()  # Report work that already expired; the rest just ends.
         with self._lock:
             self._closed = True
             for work_id in list(self._items):
@@ -148,4 +179,11 @@ class FileWorkStore:
             return len(self._items)
 
 
-store = FileWorkStore()
+def _record_expiry(event: FileEvent) -> None:
+    # Imported here so the store module does not pull in the database layer.
+    from app.file_events import record
+
+    record(event, Action.cancel)
+
+
+store = FileWorkStore(on_expired=_record_expiry)

@@ -72,6 +72,10 @@
   (SHA-256) 만 남긴다.
 - 사전 경고 로그는 **민감정보 유형과 건수만** 남긴다 (`detected_types`,
   `detected_count`).
+- `source`는 이벤트를 만든 흐름이다. `text`(기본값, 질문 `/process` → `/decide`)와
+  `file`(XLSX 파일 API)이 있다. 파일 이벤트는 서버가 남긴다: 차단 응답은 `cancel`,
+  보호본 다운로드는 `send_transformed`, 내려받지 않고 만료되면 `cancel`.
+  파일의 `content_hash`는 올라온 파일 바이트의 SHA-256이다. 큐 분류는 텍스트와 같다.
 
 ## 7. 등급 판정 (흐름도 S2) — local_ai 탐지 결과 → 등급
 

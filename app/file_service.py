@@ -3,11 +3,13 @@ from dataclasses import asdict
 import threading
 from uuid import uuid4
 
+from app import file_events
 from app.detectors import get_detector
+from app.file_events import FileEvent
 from app.file_schemas import FileResult, FileSummary
 from app.file_store import FileStoreFull, FileWorkStore
 from app.grading import decide_grade
-from app.schemas import Grade
+from app.schemas import Action, Grade
 from file_sanitizer import LocalPIIProcessor, sanitize_xlsx
 from file_sanitizer.local_pii import Findings
 from local_ai.pipeline import LocalSession
@@ -93,8 +95,19 @@ class FileProcessingJob:
             result = sanitize_xlsx(data, self.work_id, processor, filename=filename)
             if result.status == "FAILED":
                 return self.failure(_STATUS_CODES.get(result.reason, 500), result.reason)
-            detection = detection_fields(processor.findings, blocked=result.status == "BLOCKED")
-            if result.status == "BLOCKED":
+            blocked = result.status == "BLOCKED"
+            detection = detection_fields(processor.findings, blocked=blocked)
+            event = FileEvent.of(
+                work_id=self.work_id, grade=_GRADES[result.grade],
+                findings=processor.findings, data=data,
+                model_enabled=detector.model_enabled,
+            )
+            if blocked:
+                # Like /process/decide, answer only once the event is stored (#32).
+                try:
+                    file_events.record(event, Action.cancel)
+                except Exception:
+                    return self.failure(500, "EVENT_LOG_FAILED")
                 return 200, FileResult(
                     work_id=self.work_id, status="BLOCKED",
                     grade=Grade.confidential, reason=result.reason, **detection,
@@ -107,7 +120,7 @@ class FileProcessingJob:
                 try:
                     item = self._store.add(
                         work_id=self.work_id, file_bytes=result.file_bytes,
-                        session=session, grade=_GRADES[result.grade], summary=summary,
+                        session=session, grade=event.grade, summary=summary, event=event,
                     )
                 except FileStoreFull:
                     return self.failure(503, "FILE_STORE_FULL")

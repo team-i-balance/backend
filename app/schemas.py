@@ -39,6 +39,13 @@ class Queue(str, Enum):
     pre_warning = "pre_warning"
 
 
+class Source(str, Enum):
+    """Which flow produced an event (issue #32)."""
+
+    text = "text"  # /process -> /process/decide, or a client posting /logs/events
+    file = "file"  # XLSX file API: BLOCKED response, protected copy download, expiry
+
+
 class EventIn(BaseModel):
     """Incoming runtime event. Body text is NOT accepted — only metadata.
 
@@ -58,6 +65,7 @@ class EventIn(BaseModel):
     # SHA-256 hex digest: exactly 64 hex chars. We never store raw content,
     # only this optional fingerprint (see rules.md section 6).
     content_hash: Optional[str] = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
+    source: Source = Source.text
 
 
 class EventOut(BaseModel):
@@ -77,6 +85,7 @@ class EventOut(BaseModel):
     restored: bool
     content_hash: Optional[str]
     queue: str
+    source: str = Source.text.value
 
 
 class EventReasonIn(BaseModel):

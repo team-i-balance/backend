@@ -95,7 +95,7 @@ curl -X POST http://localhost:8000/files/sanitize \
 | 415 | `EXPECTED_MULTIPART`, `UNSUPPORTED_FILE_TYPE` |
 | 422 | `INVALID_MULTIPART`, `EXPECTED_ONE_FILE`, `INVALID_XLSX`, `UNSUPPORTED_FEATURE`, `RESIDUAL_CHECK_FAILED` |
 | 429 | `FILE_PROCESSING_BUSY`: 다른 파일 처리 중; `Retry-After: 1` |
-| 500 | `PROCESSOR_ERROR`, `INVALID_PROCESSOR_RESULT`, `INVALID_COPY`, `COPY_VERIFICATION_ERROR`, `PROCESSING_ERROR` |
+| 500 | `PROCESSOR_ERROR`, `INVALID_PROCESSOR_RESULT`, `INVALID_COPY`, `COPY_VERIFICATION_ERROR`, `PROCESSING_ERROR`, `EVENT_LOG_FAILED`(차단 이벤트 저장 실패) |
 | 503 | `MODEL_UNAVAILABLE`, `FILE_STORE_FULL` |
 
 클라이언트는 HTTP 코드와 `status`를 함께 확인합니다. 처리가 끝날 때 응답하며,
@@ -161,17 +161,40 @@ Cache-Control: no-store
 파일 바이트를 가져오는 순간 다운로드가 소비됩니다. 동시에 여러 요청이 와도 한 요청만
 성공합니다. 전송이 중단되거나 사용자가 파일을 저장하지 못한 경우에도 재다운로드는 404이며,
 원본을 다시 업로드해야 합니다. 범위·재개 다운로드는 지원하지 않습니다.
+보호본은 보안 이벤트를 저장한 뒤에만 내보냅니다. 저장에 실패하면
+`500 / {"detail": "EVENT_LOG_FAILED"}`이며, 이때도 다운로드는 소비됩니다.
 
 토큰 인증 [#10](https://github.com/team-i-balance/backend/issues/10)이 도입되기 전까지는
 업로드 시 서버가 생성한 추측하기 어려운 UUID `work_id`가 접근 열쇠입니다.
 ID를 아는 사람은 다운로드할 수 있으므로 공개 링크로 공유하지 않습니다.
 #10 통합 시 업로드한 토큰과 다운로드 요청 토큰의 소유권을 함께 확인해야 합니다.
 
+## 보안 이벤트 기록
+
+파일 작업도 텍스트의 `/process/decide`처럼 보안 이벤트 로그(`/logs/events`)에 남습니다.
+앱이 따로 호출할 필요 없이 서버가 기록합니다.
+
+| 시점 | `action` | 비고 |
+| --- | --- | --- |
+| `BLOCKED` 응답 | `cancel` | 이벤트 저장에 실패하면 `500 / EVENT_LOG_FAILED`로 응답 |
+| 보호본 다운로드 | `send_transformed` | 텍스트의 변환문 전송에 해당. 저장 실패 시 보호본을 내보내지 않음 |
+| `READY`인데 내려받지 않고 만료 | `cancel` | 60초마다 도는 정리 작업이 기록(만료 후 약 1분 안). 요청 처리 중에는 쓰지 않음 |
+
+- 기존 이벤트 형식(`EventIn`)을 그대로 쓰고 `source: "file"`로 텍스트 이벤트와 구분합니다.
+  기존 행과 텍스트 이벤트는 `source: "text"`입니다. 서버 시작 시 기존 DB에 열을 추가합니다.
+- `request_id`는 파일 `work_id`, `grade`는 응답과 같은 등급, `detected_types`·`detected_count`는
+  응답의 같은 필드(파일 전체에서 찾은 유형·곳 수)입니다. 파일 검사는 모델을 쓰므로
+  `detection_confidence`는 `high`입니다.
+- `content_hash`는 올라온 파일 바이트의 SHA-256입니다. 원문 값, 파일 이름, 셀 위치는 저장하지 않습니다.
+- `FAILED`, 처리 후 연결이 끊겨 버린 작업, 서버 종료로 사라진 작업은 기록하지 않습니다.
+- 큐는 텍스트 이벤트와 같은 규칙(`app/rules.md` 4절)으로 정합니다. 지금 규칙에서는
+  전송이 없는 취소와 변환 전송 모두 `pre_warning`이며, 원문 전송이 아니므로 검토 건(`/cases`)이 되지 않습니다.
+
 ## 내부 복원·AI 전송 코드 연결
 
-다운로드에는 `FileWorkStore.take_download(work_id)`를 사용합니다. 파일 바이트만 원자적으로
-꺼내 반환하고, 같은 작업의 `LocalSession`은 원래 만료 시각까지 유지합니다. 파일 다운로드가
-매핑의 유효기간을 연장하지는 않습니다.
+다운로드에는 `FileWorkStore.take_download(work_id)`를 사용합니다. 파일 바이트와 기록할 이벤트
+정보를 원자적으로 꺼내 `Download(data, event)`로 반환하고, 같은 작업의 `LocalSession`은
+원래 만료 시각까지 유지합니다. 파일 다운로드가 매핑의 유효기간을 연장하지는 않습니다.
 
 내부 `FileWorkStore.take(work_id)`는 작업 전체를 저장소에서 제거하고 소유권을 호출자에게
 넘깁니다. 이미 다운로드했다면 `item.downloaded`는 `True`, `item.file_bytes`는 `b""`이며,
@@ -210,7 +233,8 @@ finally:
 - 파일 한 개를 처리하는 동안 추가 업로드는 429입니다. 수신 중단·파서 오류·취소 시에도
   업로드 임시 파일을 닫습니다. 취소된 모델 작업이 실제 끝나기 전에는 처리 슬롯을 재사용하지 않습니다.
 - Starlette의 업로드 버퍼는 1 MiB를 넘으면 임시 디스크를 사용할 수 있습니다.
-  종료 경로에서 닫으며 별도 영구 원본 저장·DB 기록·외부 전송은 하지 않습니다.
+  종료 경로에서 닫으며 별도 영구 원본 저장·외부 전송은 하지 않습니다. DB에는 위의
+  보안 이벤트 메타데이터만 기록합니다.
 - 초기 운영은 단일 프로세스입니다. 서버 재시작 시 보호본·매핑은 사라집니다.
   여러 worker/서버에 분산하는 운영은 공유 저장소 설계 후 지원해야 합니다.
 

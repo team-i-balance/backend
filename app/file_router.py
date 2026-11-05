@@ -8,14 +8,19 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from starlette.responses import JSONResponse, Response
 
+from app import file_events
 from app.file_schemas import FileResult
 from app.file_service import FileProcessingJob
 from app.file_store import store
 from app.file_upload import FileRequestError, read_upload
+from app.schemas import Action
 
 router = APIRouter(prefix="/files", tags=["files"])
 _processing_slot = threading.BoundedSemaphore(1)
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_DETAIL = {
+    "type": "object", "properties": {"detail": {"type": "string"}}, "required": ["detail"],
+}
 
 
 def _response(code: int, result: FileResult):
@@ -73,22 +78,32 @@ async def sanitize_file(request: Request):
         },
         404: {
             "description": "Unknown, expired or already downloaded work_id.",
-            "content": {"application/json": {"schema": {
-                "type": "object", "properties": {"detail": {"type": "string"}},
-                "required": ["detail"],
-            }}},
+            "content": {"application/json": {"schema": _DETAIL}},
+        },
+        500: {
+            "description": "EVENT_LOG_FAILED: the copy was claimed but not logged, so not sent.",
+            "content": {"application/json": {"schema": _DETAIL}},
         },
     },
 )
 def download_file(work_id: str):
     """The opaque work_id grants access until token ownership is implemented (#10)."""
-    data = store.take_download(work_id)
-    if data is None:
+    claimed = store.take_download(work_id)
+    if claimed is None:
         raise HTTPException(
             status_code=404, detail="FILE_NOT_AVAILABLE", headers={"Cache-Control": "no-store"},
         )
+    if claimed.event is not None:
+        # Like /process/decide, hand the copy out only once its event is stored (#32).
+        try:
+            file_events.record(claimed.event, Action.send_transformed)
+        except Exception:
+            raise HTTPException(
+                status_code=500, detail="EVENT_LOG_FAILED",
+                headers={"Cache-Control": "no-store"},
+            ) from None
     return Response(
-        data,
+        claimed.data,
         media_type=XLSX_MEDIA_TYPE,
         headers={
             "Cache-Control": "no-store",
