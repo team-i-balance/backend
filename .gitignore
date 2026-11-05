@@ -17,3 +17,12 @@ env/
 .DS_Store
 .idea/
 .vscode/
+# Logging module runtime data (never commit).
+# Anchored to repo root so tests/data/ (fixtures) is still tracked.
+/data/
+/keys/
+/exports/
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
