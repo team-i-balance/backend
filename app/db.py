@@ -26,13 +26,32 @@ CREATE TABLE IF NOT EXISTS event_log (
     reverted        INTEGER NOT NULL DEFAULT 0,
     restored        INTEGER NOT NULL DEFAULT 0,
     content_hash    TEXT,
-    queue           TEXT    NOT NULL
+    queue           TEXT    NOT NULL,
+    -- Context fields (issue #21)
+    user_id         TEXT,
+    dept            TEXT,
+    target_ai       TEXT,
+    device_id       TEXT,
+    reason_text     TEXT,
+    items           TEXT    NOT NULL DEFAULT '[]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_created_at ON event_log (created_at);
 CREATE INDEX IF NOT EXISTS idx_event_queue      ON event_log (queue);
 CREATE INDEX IF NOT EXISTS idx_event_grade      ON event_log (grade);
+CREATE INDEX IF NOT EXISTS idx_event_user_id    ON event_log (user_id);
 """
+
+# Migration: add new columns to an existing DB that was created before issue #21.
+# ALTER TABLE ADD COLUMN is idempotent when wrapped in the ignore-existing guard.
+_MIGRATIONS = [
+    "ALTER TABLE event_log ADD COLUMN user_id    TEXT",
+    "ALTER TABLE event_log ADD COLUMN dept        TEXT",
+    "ALTER TABLE event_log ADD COLUMN target_ai   TEXT",
+    "ALTER TABLE event_log ADD COLUMN device_id   TEXT",
+    "ALTER TABLE event_log ADD COLUMN reason_text TEXT",
+    "ALTER TABLE event_log ADD COLUMN items       TEXT NOT NULL DEFAULT '[]'",
+]
 
 
 def init_db() -> None:
@@ -40,6 +59,12 @@ def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        # Apply additive migrations for DBs created before issue #21.
+        for stmt in _MIGRATIONS:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # column already exists — safe to ignore
 
 
 @contextmanager
