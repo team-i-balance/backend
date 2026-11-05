@@ -25,8 +25,8 @@ _STATUS_CODES = {
 }
 
 
-def classify_file_types(detected_types):
-    grade = decide_grade(detected_types)
+def classify_file_types(detected_types, overrides=None):
+    grade = decide_grade(detected_types, overrides)
     # Keep future, unrecognized PII types sensitive rather than passing them
     # through as public. The shared policy determines the confidential types.
     if grade == Grade.confidential:
@@ -90,8 +90,15 @@ class FileProcessingJob:
             except Exception:
                 return self.failure(503, "MODEL_UNAVAILABLE")
 
+            from app.policy import store as policy_store
+            from app.policy_apply import apply_policy_to_detector
+
+            # Same active policy as /process (#47); a failed apply keeps the previous one.
+            overrides = apply_policy_to_detector(detector, policy_store.current()).grade_overrides
             session = LocalSession(detector)
-            processor = LocalPIIProcessor(session, classify=classify_file_types)
+            processor = LocalPIIProcessor(
+                session, classify=lambda types: classify_file_types(types, overrides),
+            )
             result = sanitize_xlsx(data, self.work_id, processor, filename=filename)
             if result.status == "FAILED":
                 return self.failure(_STATUS_CODES.get(result.reason, 500), result.reason)

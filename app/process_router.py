@@ -80,8 +80,9 @@ def process_text(body: ProcessIn):
     from app.policy_apply import apply_policy_to_detector
 
     detector = _get_detector(body.rules_only)
-    # Apply the active policy's type toggles to the (shared) detector.
-    apply_policy_to_detector(detector, policy_store.current())
+    # Apply the active policy (types, rules, dict, exclude) to the shared detector.
+    # A policy that fails to apply leaves the previous one in effect (#47).
+    applied = apply_policy_to_detector(detector, policy_store.current())
     if body.file_work_id is None:
         # The pseudonym mapping is per-work; the detector is shared.
         session = LocalSession(detector)
@@ -109,7 +110,7 @@ def process_text(body: ProcessIn):
             detail="detection failed; text was not fully checked",
         )
 
-    grade = decide_grade(result.detection_types)
+    grade = decide_grade(result.detection_types, applied.grade_overrides)
     confidence = coverage_to_confidence(result.coverage)
 
     item = store.add(

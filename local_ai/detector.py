@@ -19,6 +19,7 @@ from pathlib import Path
 from .additional_rules import detect_additional
 from .kr_rules import kr_structured_detections, password_first
 from .preprocessing import normalize_for_detection, restore_detection_offsets
+from .pseudonym import POLICY_TOKEN
 
 _PHONE = re.compile(r'(?<![0-9])01[016789][ -]?[0-9]{3,4}[ -]?[0-9]{4}(?![0-9])')
 _EMAIL = re.compile(r'(?i)(?<![\w.+-])[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![a-z0-9-])')
@@ -35,7 +36,8 @@ _CREDENTIAL = re.compile(
 )
 _BEARER = re.compile(r'(?i)\bauthorization\b[\"\']?\s*[:=]\s*[\"\']?bearer\s+(?P<value>[^\s\"\'\[\],;{}]+)')
 _PROVIDER_API_KEY = re.compile(r'(?<![A-Za-z0-9_])(?:sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,})(?![A-Za-z0-9_-])')
-_PLACEHOLDER = re.compile(r'\[[^\[\]\r\n]+_\d+\]')
+# Pseudonym placeholders, plus the fixed 태그/삭제 outputs of a policy method (#47).
+_PLACEHOLDER = re.compile(r'\[[^\[\]\r\n]+_\d+\]|' + POLICY_TOKEN.pattern)
 
 
 def _valid_business_number(value: str) -> bool:
@@ -197,6 +199,8 @@ class Detector:
         # Detection types turned off by the active policy (types on/off). Empty
         # by default, so behaviour is unchanged until a policy disables a type.
         self._disabled_types: frozenset[str] = frozenset()
+        # Optional (text, spans) -> spans hook for the rest of the policy (app/policy_apply.py).
+        self._span_policy = None
         self._tokenizer = self._session = self._np = None
         self._labels: dict[str, str] = {}
         self._slm = None
@@ -240,11 +244,14 @@ class Detector:
         except Exception as exc:
             raise DetectionError('Failed to load the local detection model') from exc
 
-    def set_policy(self, *, disabled_types=None) -> None:
-        """Apply active-policy toggles. Currently supports turning detection
-        types off (policy ``types`` on/off). Unknown types are ignored. Passing
-        None/empty restores default behaviour."""
+    def set_policy(self, *, disabled_types=None, span_policy=None) -> None:
+        """Apply active-policy toggles. ``disabled_types`` turns detection types
+        off (policy ``types`` on/off; unknown types are ignored). ``span_policy``
+        is called as ``span_policy(text, spans)`` on the final spans and returns
+        the spans to use (company words, exclusions, methods). Passing None/empty
+        restores default behaviour."""
         self._disabled_types = frozenset(disabled_types or ())
+        self._span_policy = span_policy
 
     def _apply_policy(self, spans: list[dict]) -> list[dict]:
         if not self._disabled_types:
@@ -256,15 +263,16 @@ class Detector:
             raise TypeError('text must be a string')
         found = self._detect_raw(text)
         normalized, offsets = normalize_for_detection(text)
-        if normalized == text:
-            return found
-        try:
-            normalized_spans = self._detect_raw(normalized)
-            return self._apply_policy(
-                _merge_overlaps(found + restore_detection_offsets(normalized_spans, offsets))
-            )
-        except Exception as exc:
-            raise DetectionError('Normalized text detection failed; text was not fully checked') from exc
+        if normalized != text:
+            try:
+                normalized_spans = self._detect_raw(normalized)
+                found = self._apply_policy(
+                    _merge_overlaps(found + restore_detection_offsets(normalized_spans, offsets))
+                )
+            except Exception as exc:
+                raise DetectionError('Normalized text detection failed; text was not fully checked') from exc
+        span_policy = self._span_policy
+        return span_policy(text, found) if span_policy is not None else found
 
     def _detect_raw(self, text: str) -> list[dict]:
         found = [{'start': m.start(), 'end': m.end(), 'type': kind}
