@@ -85,10 +85,11 @@ class SlmAdapterTests(unittest.TestCase):
         self.assertEqual([(s['start'], s['end'], s['type']) for s in spans], [(0, 10, 'CONFIDENTIAL')])
 
     def test_placeholders_are_not_redetected(self):
-        det = detector_with([('[주소_1]', 'ADDRESS', 'P-ADDR'), ('[민감정보_1] 내렸어', 'SENSITIVE', 'P-SENS')])
-        spans = det._add_slm_spans('[주소_1] 로 [민감정보_1] 내렸어', [])
-        self.assertEqual([('[주소_1] 로 [민감정보_1] 내렸어'[s['start']:s['end']], s['type']) for s in spans],
-                         [('내렸어', 'SENSITIVE')])
+        text = '[주소_1] 로 [민감정보_1] 내렸어. 김민수 님'
+        det = detector_with([('[주소_1]', 'ADDRESS', 'P-ADDR'), ('[민감정보_1] 내렸어', 'SENSITIVE', 'P-SENS'),
+                             ('김민수', 'NAME', 'P-NAME')])
+        spans = det._add_slm_spans(text, [])
+        self.assertEqual([(text[s['start']:s['end']], s['type']) for s in spans], [('김민수', 'NAME')])
 
     def test_policy_grade_decides_type(self):
         slm = SlmSpanDetector.__new__(SlmSpanDetector)

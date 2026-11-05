@@ -206,9 +206,12 @@ class Detector:
         placeholders = [{'start': m.start(), 'end': m.end()} for m in _PLACEHOLDER.finditer(text)]
         slm, absorbed = [], set()
         for span in self._slm.detect(text):
-            blockers = secrets + placeholders
+            # A span touching a placeholder is the SLM re-reading already-masked content.
+            if any(p['start'] < span['end'] and span['start'] < p['end'] for p in placeholders):
+                continue
+            blockers = secrets
             if span['type'] not in _GRADE_C_SLM_TYPES:
-                blockers = rules + placeholders
+                blockers = rules
             else:
                 for i, r in enumerate(rules):
                     if r['type'] not in _SECRET_RULE_TYPES and r['start'] < span['end'] and span['start'] < r['end']:
