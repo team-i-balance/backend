@@ -47,6 +47,46 @@ def test_date_range_filtering(client):
     assert {r["request_id"] for r in rows} == {"jun"}
 
 
+def test_date_bound_with_different_offset_compares_instants(client):
+    # Regression (P2-1): a bound given in +02:00 must be compared as an instant,
+    # not lexically against the stored +00:00 string.
+    from app import crud
+
+    _seed("2026-06-01T00:00:00+00:00", "evt")
+
+    # 2026-06-01T01:00:00+02:00 == 2026-05-31T23:00:00Z, i.e. one hour BEFORE
+    # the event. So the event must be included when used as a start bound.
+    rows = crud.list_events(start="2026-06-01T01:00:00+02:00")
+    assert {r["request_id"] for r in rows} == {"evt"}
+
+    # 2026-06-01T01:00:00-02:00 == 2026-06-01T03:00:00Z, i.e. three hours AFTER
+    # the event. As a start bound it must EXCLUDE the event.
+    rows = crud.list_events(start="2026-06-01T01:00:00-02:00")
+    assert rows == []
+
+
+def test_date_bound_with_z_suffix(client):
+    # Regression (P2-1): 'Z' suffix must be accepted and treated as UTC.
+    from app import crud
+
+    _seed("2026-06-01T12:00:00+00:00", "noon")
+
+    rows = crud.list_events(start="2026-06-01T11:00:00Z")
+    assert {r["request_id"] for r in rows} == {"noon"}
+
+    rows = crud.list_events(end="2026-06-01T11:00:00Z")
+    assert rows == []
+
+
+def test_naive_date_bound_treated_as_utc(client):
+    from app import crud
+
+    _seed("2026-06-01T12:00:00+00:00", "noon")
+    # No offset -> treated as UTC.
+    rows = crud.list_events(start="2026-06-01T11:00:00")
+    assert {r["request_id"] for r in rows} == {"noon"}
+
+
 def test_get_conn_rolls_back_on_error(client):
     from app.db import get_conn
 

@@ -81,3 +81,57 @@ def test_public_key_reused_across_exports(client):
     fp1 = client.post("/logs/export").json()["public_key_fingerprint"]
     fp2 = client.post("/logs/export").json()["public_key_fingerprint"]
     assert fp1 == fp2  # key generated once, then stable
+
+
+def test_concurrent_exports_get_unique_files(client):
+    # Regression (P2-2): two exports in quick succession (same second) must
+    # not overwrite each other. Different queue filters must each keep their
+    # own artifact with the correct contents.
+    client.post("/logs/events", json=_event(reason="false_positive"))  # detection_improve
+    client.post("/logs/events", json=_event())  # pre_warning
+
+    r1 = client.post("/logs/export", params={"queue": "detection_improve"}).json()
+    r2 = client.post("/logs/export", params={"queue": "pre_warning"}).json()
+
+    assert r1["file"] != r2["file"], "exports must use distinct file paths"
+    assert r1["exported"] == 1
+    assert r2["exported"] == 1
+
+    from app.crypto import decrypt_file
+
+    # Each file must still contain exactly what its call reported.
+    recs1 = decrypt_file(Path(r1["file"]))
+    recs2 = decrypt_file(Path(r2["file"]))
+    assert len(recs1) == 1 and recs1[0]["queue"] == "detection_improve"
+    assert len(recs2) == 1 and recs2[0]["queue"] == "pre_warning"
+
+
+def test_many_rapid_exports_all_distinct(client):
+    client.post("/logs/events", json=_event())
+    paths = {client.post("/logs/export").json()["file"] for _ in range(10)}
+    assert len(paths) == 10  # all unique, none overwritten
+
+
+def test_export_retries_on_filename_collision(client, monkeypatch):
+    # Force the exclusive-create ('x' mode) to collide once, exercising the
+    # retry branch, then succeed on the next token.
+    import builtins
+
+    import app.crypto as crypto
+
+    real_open = builtins.open
+    calls = {"x": 0}
+
+    def flaky_open(file, mode="r", *args, **kwargs):
+        if mode == "x":
+            calls["x"] += 1
+            if calls["x"] == 1:
+                raise FileExistsError(file)
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", flaky_open)
+
+    out = crypto.encrypt_records([{"queue": "pre_warning"}])
+    assert calls["x"] == 2  # first collided, second succeeded
+    assert out.exists()
+    assert crypto.decrypt_file(out) == [{"queue": "pre_warning"}]

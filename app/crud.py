@@ -11,6 +11,27 @@ from app.schemas import EventIn, Stats
 _ACCEPTED_ACTIONS = ("send_as_is", "send_transformed")
 
 
+def _to_utc_iso(value: str) -> str:
+    """Normalize an ISO8601 string to a canonical UTC representation.
+
+    Stored timestamps are always UTC with a '+00:00' offset (see insert_event).
+    Query bounds may arrive with a different offset or a 'Z' suffix; comparing
+    them lexicographically against stored values would be wrong. We parse the
+    bound, convert to UTC, and render it the same way rows are stored, so the
+    string comparison in SQL is equivalent to an instant comparison.
+
+    A naive datetime (no offset) is treated as UTC.
+    """
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _row_to_dict(row) -> dict:
     d = dict(row)
     d["detected_types"] = json.loads(d.get("detected_types") or "[]")
@@ -21,7 +42,7 @@ def _row_to_dict(row) -> dict:
 
 def insert_event(event: EventIn) -> dict:
     queue = classify(event)
-    created_at = datetime.now(timezone.utc).isoformat()
+    created_at = _now_utc_iso()
 
     with get_conn() as conn:
         cur = conn.execute(
@@ -73,12 +94,15 @@ def list_events(
     if queue:
         clauses.append("queue = ?")
         params.append(queue)
+    # Compare as instants via SQLite's datetime(), with both the stored value
+    # and the bound normalized to UTC. This avoids lexical comparison pitfalls
+    # (differing offsets, 'Z' suffix, or microsecond presence).
     if start:
-        clauses.append("created_at >= ?")
-        params.append(start)
+        clauses.append("datetime(created_at) >= datetime(?)")
+        params.append(_to_utc_iso(start))
     if end:
-        clauses.append("created_at <= ?")
-        params.append(end)
+        clauses.append("datetime(created_at) <= datetime(?)")
+        params.append(_to_utc_iso(end))
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = f"SELECT * FROM event_log {where} ORDER BY id DESC LIMIT ?"

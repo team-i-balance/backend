@@ -100,10 +100,22 @@ def encrypt_records(records: list[dict]) -> Path:
         "ciphertext": _b64(ciphertext),
     }
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out = EXPORT_DIR / f"logs_{ts}.enc.json"
-    out.write_text(json.dumps(envelope, ensure_ascii=False, indent=2))
-    return out
+    data = json.dumps(envelope, ensure_ascii=False, indent=2)
+
+    # Give every export a unique file and create it exclusively so concurrent
+    # or same-second exports can never overwrite each other's artifact.
+    # Timestamp includes microseconds; a short random token breaks any tie.
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%f")
+    while True:
+        token = os.urandom(4).hex()
+        out = EXPORT_DIR / f"logs_{ts}_{token}.enc.json"
+        try:
+            # 'x' = exclusive create: fails if the path already exists.
+            with open(out, "x", encoding="utf-8") as fh:
+                fh.write(data)
+            return out
+        except FileExistsError:
+            continue  # astronomically unlikely; pick a new token and retry
 
 
 def decrypt_file(path: Path) -> list[dict]:
