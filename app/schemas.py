@@ -159,3 +159,82 @@ class RestoreOut(BaseModel):
     text: str
     unknown: list[str]   # placeholders not from this session (left as-is)
     blocked: list[str]   # secret placeholders intentionally not restored
+
+
+# --- Policy bundle deploy + signature verification (흐름도 S7) ----------------
+#
+# The exact bundle format and signing scheme are owned by the security-team
+# tool (S6) and will be finalized later. To avoid blocking on that, the deploy
+# endpoint accepts the whole bundle as an opaque object and hands it to a
+# pluggable verifier (see app/policy.py). When the real format arrives, only
+# the verifier/adapter changes; these models and the endpoint stay the same.
+
+
+class DeployIn(BaseModel):
+    """A signed policy bundle to deploy. Shape is intentionally loose."""
+
+    # The entire bundle object exactly as produced by the security-team tool.
+    # Interpreted by the configured PolicyVerifier, not here.
+    bundle: dict
+
+
+class PolicyInfo(BaseModel):
+    """Metadata about the currently active policy (no rule bodies dumped)."""
+
+    active: bool
+    version: Optional[int] = None
+    org: Optional[str] = None
+    key_id: Optional[str] = None
+    rule_count: Optional[int] = None
+    activated_at: Optional[str] = None
+    expires_at: Optional[str] = None
+
+
+class DeployOut(BaseModel):
+    """Result of a deploy attempt."""
+
+    accepted: bool
+    reason: str          # why it was accepted or rejected
+    policy: PolicyInfo   # the active policy AFTER this attempt
+
+
+class PublishIn(BaseModel):
+    """Console publishes a policy payload; the backend assigns version+1,
+    signs it into a DSSE bundle, and stores it. version (if provided) is
+    ignored — the store sets it."""
+
+    payload: dict
+
+
+class PublishOut(BaseModel):
+    version: int
+    keyid: str
+    bundle_sha256: str
+
+
+class AckStatus(str, Enum):
+    applied = "applied"
+    rejected = "rejected"
+
+
+class AckIn(BaseModel):
+    """A PC agent reports the outcome of applying a bundle version."""
+
+    device_id: str = Field(min_length=1, max_length=128)
+    version: int
+    status: AckStatus
+    reason: Optional[str] = Field(default=None, max_length=64)
+
+
+class AckOut(BaseModel):
+    ok: bool
+    summary: dict  # devices / applied / rejected / reject_reasons
+
+
+class ModelPublishIn(BaseModel):
+    """Console publishes a model manifest {name, version, sha256, url}."""
+
+    name: str
+    version: str
+    sha256: str
+    url: str

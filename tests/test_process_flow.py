@@ -245,7 +245,11 @@ def test_process_detection_failure_returns_422_without_text(client, monkeypatch)
         def close(self):
             pass
 
-    monkeypatch.setattr(pr, "_get_detector", lambda rules_only: object())
+    class DummyDetector:
+        def set_policy(self, **kw):
+            pass
+
+    monkeypatch.setattr(pr, "_get_detector", lambda rules_only: DummyDetector())
     import local_ai.pipeline as pipeline
 
     monkeypatch.setattr(pipeline, "LocalSession", BoomSession)
@@ -268,6 +272,9 @@ def test_full_mode_with_model_dir_builds_detector(client, monkeypatch, tmp_path)
     class FakeDetector:
         def __init__(self, model_dir=None, **kw):
             built["model_dir"] = model_dir
+
+        def set_policy(self, **kw):
+            pass
 
     import local_ai.detector as det
 
