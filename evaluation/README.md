@@ -12,6 +12,8 @@ python evaluation/evaluate_secret_rule_candidates.py \
 
 The output defaults to `evaluation/candidate_results.json`. It contains aggregate counts, dataset hashes and source/split group metrics; it does not contain source text or detected values.
 
+Dataset basenames must be unique because result metadata is keyed by filename. If two input paths share a basename, the runner stops with a clear `ValueError` instead of overwriting one dataset's rows or metrics.
+
 ## Candidate algorithm
 
 - Hyphenated `3-2-5` business-number shaped strings are candidates regardless of checksum. Plain 10-digit values require a nearby business-number label on the same line.

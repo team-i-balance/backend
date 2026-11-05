@@ -158,17 +158,28 @@ def _fixture_result(detector: Detector) -> dict:
             "total": len(results), "failures": failures}
 
 
+def _validate_unique_basenames(datasets: list[Path]) -> list[Path]:
+    """Reject duplicate names because report keys use each dataset basename."""
+    datasets = [Path(path) for path in datasets]
+    names = [path.name for path in datasets]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError("Dataset filenames must be unique; duplicate basename(s): " + ", ".join(duplicates))
+    return datasets
+
+
 def run(datasets: list[Path]) -> dict:
+    datasets = _validate_unique_basenames(datasets)
+    missing = [str(path) for path in datasets if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"evaluation dataset not found: {', '.join(missing)}")
+
     # Block Python socket entry points in this runner. This is a guard, not proof
     # that every native dependency is incapable of networking.
     def blocked(*_args, **_kwargs):
         raise RuntimeError("network disabled by evaluation runner")
     socket.socket.connect = blocked
     socket.create_connection = blocked
-
-    missing = [str(path) for path in datasets if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(f"evaluation dataset not found: {', '.join(missing)}")
     detector = Detector(None)  # deterministic rules-only comparison
     rows_by_file = {
         path.name: [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
