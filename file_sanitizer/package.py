@@ -303,7 +303,17 @@ def inspect_package(data):
                 continue  # Already parsed, regardless of ZIP member order.
             root = fromstring(package.read(info), forbid_dtd=True)
             if name == "[Content_Types].xml":
-                workbook_parts = [n.get("PartName") for n in root if n.get("ContentType") == WORKBOOK_TYPE]
+                # Effective type per part (OPC: an Override wins, else the Default for the
+                # extension). Generators such as the Open XML SDK declare the workbook only
+                # through <Default Extension="xml" ContentType=workbook>.
+                overrides = {n.get("PartName"): n.get("ContentType") for n in root if local_name(n.tag) == "Override"}
+                defaults = {(n.get("Extension") or "").lower(): n.get("ContentType")
+                            for n in root if local_name(n.tag) == "Default"}
+                workbook_parts = sorted(
+                    "/" + part for part in names
+                    if part != "[Content_Types].xml"  # the type map itself is not a part
+                    and overrides.get("/" + part, defaults.get(part.rsplit(".", 1)[-1].lower())) == WORKBOOK_TYPE
+                )
                 if workbook_parts != ["/xl/workbook.xml"]:
                     raise RejectedFile("UNSUPPORTED_FEATURE")
                 string_tables = [n.get("PartName") for n in root if n.get("ContentType") == STRING_TABLE_TYPE]

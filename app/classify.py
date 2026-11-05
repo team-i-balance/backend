@@ -19,7 +19,9 @@ def classify(event: EventIn) -> Queue:
         return Queue.violation_candidate
 
     # 3. 민감·기밀 + 원문 전송(그대로 / 사유 없는 되돌림) + 확실한 탐지(high) -> 실제 위반 큐
-    #    (보안팀 콘솔의 '필수 검토'. 사유가 있는 되돌림은 규칙 1·2에서 이미 걸렀다)
+    #    (사유가 있는 원문 전송은 규칙 1·2에서 이미 걸렀다)
+    #    로그 큐는 보안팀 검토 건(/cases, app/case_crud.py)의 필수·선택과 별개다.
+    #    검토 건은 탐지 신뢰도와 상관없이 S·C 원문 전송을 모두 다룬다(#60, #62).
     if (
         event.grade != Grade.public
         and event.action in _RAW_SEND_ACTIONS

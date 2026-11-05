@@ -191,6 +191,20 @@ class PseudonymSession:
         self._reserved_literals.update(literal_tokens)
         return result, tuple(masked)
 
+    def reserve_literals(self, texts) -> None:
+        """Keep placeholder-shaped text that a whole document already contains unassigned.
+
+        pseudonymize() reserves literals only from the text it is given, so in a
+        file a later cell containing "[이름_1]" would collide with the token an
+        earlier cell was assigned. Reserving every cell first avoids that. A token
+        that is already assigned still fails closed in pseudonymize().
+        """
+        if self._closed:
+            raise PseudonymError("session is closed")
+        for text in texts:
+            if isinstance(text, str):
+                self._reserved_literals.update(_PLACEHOLDER.findall(text))
+
     @staticmethod
     def _fixed_output(span: _Span, value: str) -> str | None:
         """Output of a non-restorable method, or None to use a restorable placeholder."""

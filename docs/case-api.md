@@ -7,15 +7,25 @@
 
 ## 검토 대상과 ID
 
-콘솔(`team-i-balance/web`의 `src/api/client.ts`)의 검토 대상 기준을 사용합니다.
-기존 `/logs`의 `real_violation` 등 로그 분류와는 별개입니다.
+원문이 외부 AI로 나간 이벤트(`action=send_as_is` 또는 `revert_original`)가 검토 대상입니다.
+필수·선택은 action이 아니라 **보낼 때 사유를 남겼는지**로 나눕니다(이슈 #60).
+기밀(C) 원문 전송은 서버가 막지 않고 항상 필수 검토 건으로 만듭니다(이슈 #62).
+기존 `/logs`의 `real_violation` 등 로그 분류와는 별개이며, 탐지 신뢰도는 보지 않습니다.
 
-| `need` | 대상 이벤트 |
-| --- | --- |
-| `required` | `grade=sensitive_S`, `action=send_as_is` (민감 원문 전송) |
-| `optional` | `grade=sensitive_S`, `action=revert_original`, `reason=business_need` (업무상 필요로 되돌림) |
+| 등급 | 사유 | `need` |
+| --- | --- | --- |
+| `sensitive_S` | 없음 (사유 없이 원문 전송) | `required` |
+| `sensitive_S` | 보낼 때 `business_need` (`reason_requested_at=null`) | `optional` |
+| `sensitive_S` | 사유 요청(`reason_requested_at`) 뒤 늦게 낸 사유, 코드 무관 | `required` (그대로 유지) |
+| `confidential_C` | 무관 (`false_positive` 포함) | `required` |
 
-안전한 전송·취소·기밀 차단·오탐 사유로만 되돌린 이벤트는 검토 건에 포함하지 않습니다.
+`need`는 `reason=business_need`이고 `reason_requested_at=null`인 민감 건만 `optional`, 나머지는
+모두 `required`입니다. 사유 없이 보낸 S·C 원문 전송은 서버가 `reason_requested_at`을 정하므로,
+나중에 사유가 도착해도 `required`로 남습니다.
+
+공개(O) 이벤트, 변환 전송·취소, 민감(S)을 보낼 때 `false_positive`를 고른 원문 전송(오탐 신고,
+[오탐 API](false-positive-api.md))은 검토 건에 포함하지 않습니다. 기준이 바뀌어 대상에서 빠진 예전
+이벤트(예: 보낼 때 `false_positive`를 고른 민감 `send_as_is`)의 검토 이력은 DB에 남지만 `/cases`에는 나오지 않습니다.
 유형 목록이 비어 있어도 위 조건에 맞으면 검토 대상으로 포함합니다.
 ID는 콘솔과 동일하게 `INC-{event.id}`입니다. 예: 이벤트 42 → `INC-42`.
 대상이 아닌 이벤트와 없는 ID는 상세 조회·처리 모두 `404 CASE_NOT_FOUND`입니다.
@@ -30,7 +40,7 @@ GET /cases/INC-42
 ```
 
 `queue` 기본값은 `required`, `limit` 기본값은 50(1~100)입니다.
-`required`/`optional`은 **열린 건만**, `closed`는 두 종류의 종결 건을 반환합니다.
+`required`/`optional`은 위 `need` 기준의 **열린 건만**, `closed`는 두 종류의 종결 건을 반환합니다.
 열린 건은 이벤트 ID 내림차순, 종결 건은 마지막 종결 이력 ID 내림차순입니다.
 목록은 `{ "items": [Case], "next_cursor": "required:42" }` 형태이며, 다음 페이지가
 없으면 `next_cursor`는 `null`입니다. 같은 `queue`와 받은 `cursor`로 다음 페이지를
@@ -142,7 +152,7 @@ Content-Type: application/json
 {"ids":["INC-43","INC-44"],"conclusion":"legit","memo":"사유 확인 — 업무 범위 내 사용"}
 ```
 
-- ID는 중복 없이 1~100개, 모두 열린 `optional` 건이어야 합니다.
+- ID는 중복 없이 1~100개, 모두 열린 `optional` 건(`need`가 위 기준으로 `optional`)이어야 합니다.
 - 콘솔의 ‘모두 문제 없음’ 동작이므로 `conclusion`은 `legit`만 허용합니다.
 - `memo`는 생략 시 `사유 확인 — 업무 범위 내 사용`, 명시 시 종결과 같은 길이 검사를 적용합니다.
 - 성공 시 `200 { "items": [Case, ...] }`를 요청 ID 순서대로 반환하고 건마다 이력을 남깁니다.

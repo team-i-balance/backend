@@ -38,6 +38,12 @@ class LocalSession:
                            tuple(remaining), 'model_and_rules' if self.detector.model_enabled else 'rules_only_incomplete',
                            len(detections), tuple(sorted(counts.items())), spans)
 
+    def reserve_literals(self, texts) -> None:
+        """Reserve placeholder-shaped text in all of a document's parts before processing it."""
+        if self._closed:
+            raise RuntimeError('session is closed')
+        self._pseudonyms.reserve_literals(texts)
+
     def restore(self, text: str):
         if self._closed:
             raise RuntimeError('session is closed')
