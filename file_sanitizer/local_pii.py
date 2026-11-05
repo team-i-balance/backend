@@ -59,6 +59,9 @@ class LocalPIIProcessor:
         # The same name or heading often occurs thousands of times in one file.
         # Reuse results only within this call and its existing pseudonym mapping.
         checked = {}
+        # A cell may quote a placeholder ("[이름_1]") that an earlier cell would
+        # otherwise be assigned; reserve such text from every part up front.
+        self.session.reserve_literals(segment.text for segment in segments)
         for segment in segments:
             if segment.text not in checked:
                 result = self.session.process(segment.text)
