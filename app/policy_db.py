@@ -37,6 +37,15 @@ CREATE TABLE IF NOT EXISTS policy_signing_key (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     public_key TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS policy_draft (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    revision INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    changes TEXT NOT NULL,
+    base_version INTEGER,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL
+);
 """
 
 
