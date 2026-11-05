@@ -15,6 +15,9 @@ from app.case_router import router as case_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    from app.policy import store as policy_store
+
+    policy_store.initialize()
     from app.sessions import store
     from app.file_store import store as file_store
 
