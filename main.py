@@ -14,6 +14,7 @@ from app.process_router import router as process_router
 from app.file_router import router as file_router
 from app.policy_router import router as policy_router
 from app.case_router import router as case_router
+from app.false_positive_router import router as fp_router, reason_request_router
 
 
 @asynccontextmanager
@@ -64,6 +65,8 @@ app.include_router(process_router, dependencies=[Depends(require_api)])
 app.include_router(file_router, dependencies=[Depends(require_api)])
 app.include_router(policy_router)
 app.include_router(case_router)
+app.include_router(fp_router)  # require_security inside (#48)
+app.include_router(reason_request_router)  # require_security inside (#48)
 
 
 @app.get("/")

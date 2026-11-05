@@ -101,6 +101,27 @@ def _migrate_is_test(conn) -> None:
         raise
 
 
+FALSE_POSITIVE_DECISION_SCHEMA = """
+-- Security-team decisions on false-positive reports (issue #48). Append-only:
+-- the latest row per value_hash is the current decision. Only the HMAC
+-- value_hash is stored, never the raw value or its preview.
+CREATE TABLE IF NOT EXISTS false_positive_decision (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    value_hash  TEXT NOT NULL CHECK (length(value_hash) = 64),
+    decision    TEXT NOT NULL CHECK (decision IN ('keep', 'exclude')),
+    why         TEXT,
+    decided_by  TEXT NOT NULL,
+    decided_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fp_decision_hash ON false_positive_decision (value_hash, id);
+"""
+
+
+def _migrate_false_positive_decisions(conn) -> None:
+    """Create the false-positive decision table. Idempotent (IF NOT EXISTS)."""
+    conn.executescript(FALSE_POSITIVE_DECISION_SCHEMA)
+
+
 def init_db() -> None:
     """Create tables and migrate event context, reason tracking, source and test flags."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +157,7 @@ def init_db() -> None:
         # Finish this transaction before the is_test migration opens its own.
         conn.commit()
         _migrate_is_test(conn)
+        _migrate_false_positive_decisions(conn)
 
 
 @contextmanager
