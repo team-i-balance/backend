@@ -24,6 +24,12 @@ echo "$(date -Is) updating $LOCAL -> $REMOTE"
 git reset --hard "origin/$BRANCH"
 
 ./venv/bin/pip install -q -r requirements.txt
+# Confidential/PII SLM (local_ai/slm): only on servers configured with a model folder.
+# CPU-only torch wheels; already-satisfied packages make this a no-op.
+if systemctl show "$SERVICE" -p Environment | grep -q LOCAL_SLM_MODEL_DIR; then
+  ./venv/bin/pip install -q --extra-index-url https://download.pytorch.org/whl/cpu \
+    -r local_ai/requirements-slm.txt
+fi
 
 sudo systemctl restart "$SERVICE"
 sleep 2
