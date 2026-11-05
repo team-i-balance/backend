@@ -344,3 +344,50 @@ class SameLineContextTests(unittest.TestCase):
         for text in ['값: 1234567890\n입금 예정', '계좌:\n값: 1234567890']:
             r = self.run_(text)
             self.assertNotIn('ACCOUNT', r.detection_types, text)
+
+
+class LocalCodexRoundTests(unittest.TestCase):
+    """Local Codex review on PR #31 (round after same-line context)."""
+
+    def run_(self, text):
+        with LocalSession(Detector(None)) as s:
+            return s.process(text)
+
+    def test_label_on_previous_line(self):
+        r = self.run_('계좌:\n110-123-456789')
+        self.assertNotIn('110-123-456789', r.text)
+        for text in ['비밀번호:\nZx9!kq77', '비밀번호:\u00a0Zx9!kq77']:
+            self.assertNotIn('Zx9!kq77', self.run_(text).text, repr(text))
+
+    def test_comma_bounds_account_context(self):
+        r = self.run_('계좌 1개, 매출 1234567890 기록')
+        self.assertNotIn('ACCOUNT', r.detection_types)
+
+    def test_account_containing_phone_shape(self):
+        r = self.run_('계좌1: 123-010-1234-5678')
+        self.assertNotIn('010-1234-5678', r.text)
+        self.assertEqual(r.remaining, ())
+
+    def test_quoted_dollar_and_escaped_quote_passwords(self):
+        self.assertNotIn('Abc123!', self.run_('pw="$Abc123!"').text)
+        self.assertNotIn('secret123', self.run_('pw="abc\\"secret123"').text)
+        self.assertIn('${DB_PASSWORD}', self.run_('pw="${DB_PASSWORD}"').text)
+
+    def test_policy_prose_and_change_dates(self):
+        for text in ['비밀번호는 90일마다 변경해 주세요', '비밀번호는 8~16자입니다.']:
+            self.assertNotIn('PASSWORD', self.run_(text).detection_types, text)
+        self.assertNotIn('DOB', self.run_('생년월일 변경일 2024-01-01').detection_types)
+        self.assertIn('DOB', self.run_('생년월일 1990-03-15').detection_types)
+
+
+class LocalCodexRound2Tests(unittest.TestCase):
+    def run_(self, text):
+        with LocalSession(Detector(None)) as s:
+            return s.process(text)
+
+    def test_next_line_key_is_rescanned(self):
+        self.assertNotIn('secret123', self.run_('password:\npassword2: secret123').text)
+
+    def test_other_date_word_before_birth_label(self):
+        r = self.run_('등록일 미상 생년월일: 1990-03-15')
+        self.assertNotIn('1990-03-15', r.text)

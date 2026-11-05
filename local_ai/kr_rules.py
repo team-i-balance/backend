@@ -30,10 +30,16 @@ def _ctx(text, start, end, words, before=25, after=12, pattern=None):
     # or placeholder: a masked value ([계좌번호_1]) is shorter and holds label words, so
     # re-inspection would otherwise see other context. Short digits stay, so numbered
     # labels ('계좌1:', 'account1=') still count.
-    left = text[max(0, start - before):start].rsplit('\n', 1)[-1]
+    window = text[max(0, start - before):start]
+    left = window.rsplit('\n', 1)[-1]
+    if not left.strip() and '\n' in window:
+        # Value opens its line: a label-only previous line ("계좌:\n110-…") still counts.
+        prev = window.rsplit('\n', 2)[-2] if window.count('\n') >= 1 else ''
+        if prev.rstrip().endswith((':', '：')):
+            left = prev
     right = text[end:end + after].split('\n', 1)[0]
-    left = re.split(r'[0-9]{3,}|\]', left)[-1]
-    right = re.split(r'[0-9]{3,}|\[', right)[0]
+    left = re.split(r'[0-9]{3,}|[\],;|]', left)[-1]
+    right = re.split(r'[0-9]{3,}|[\[,;|]', right)[0]
     seg = (left + ' ' + right).lower()
     if pattern is not None and pattern.search(seg):
         return True
@@ -257,8 +263,8 @@ _PW_KV_RE = re.compile(
     # keys such as password_min_length / password_hint do not end like this and stay out.
     r'''(?:[_.\-]?(?:confirmation|confirmed|confirm|again|repeat|retype|verify|check|\d)|\s?(?:확인|재확인|재입력|다시\s?입력))?)'''
     # Horizontal whitespace only: an empty field must not take the next line's key as its value.
-    r'''["']?[ \t]*(?P<sep>:=|=>|[:=：])[ \t]*'''
-    r'''(?:"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)'|(?P<v>[^\s"']+))'''
+    r'''["']?[ \t\u00a0]*(?P<sep>:=|=>|[:=：])[ \t\u00a0]*(?:\r?\n[ \t\u00a0]*)?'''
+    r'''(?:"(?P<dq>(?:[^"\\\n]|\\.)*)"|'(?P<sq>(?:[^'\\\n]|\\.)*)'|(?P<v>[^\s"']+))'''
 )
 _PW_PLACEHOLDER = re.compile(
     r'(?i)^(\*+|x{3,}|<.*>|\$\{?[A-Za-z_][\w]*\}?|\{\{.*\}\}|%.*%|null|none|nil|undefined|true|false|\?+|\.{3}|…|'
@@ -269,8 +275,8 @@ _URL_CRED_RE = re.compile(r'(?i)(?<![a-z0-9])[a-z][a-z0-9+.\-]*://[^:/\s@]+:(?P<
 _KO_PW_RE = re.compile(
     # The label must end the word: '암호화=AES256' or '비밀번호정책=strict' is not a password field.
     r'''(?:비밀번호|비번|패스워드|암호)(?:(?:은|는|이|가|를|을|도)(?![가-힣])|(?![가-힣A-Za-z0-9_]))'''
-    r'''[ \t]*(?P<sep>:|=|->|→|은|는)?[ \t]*'''
-    r'''(?:"(?P<dq>[^"\n]+)"|'(?P<sq>[^'\n]+)'|`(?P<bq>[^`\n]+)`|(?P<v>[^\s"'`]+))'''
+    r'''[ \t\u00a0]*(?P<sep>:|=|->|→|은|는)?[ \t\u00a0]*(?:(?<=[:：])\r?\n[ \t\u00a0]*)?'''
+    r'''(?:"(?P<dq>(?:[^"\\\n]|\\.)+)"|'(?P<sq>(?:[^'\\\n]|\\.)+)'|`(?P<bq>[^`\n]+)`|(?P<v>[^\s"'`]+))'''
 )
 _HANGUL = re.compile(r'[가-힣]')
 # Particle/ending glued to an unquoted value: "qwer1234!야", "abc123입니다."
@@ -278,13 +284,17 @@ _PARTICLE_END = re.compile(
     r'(?:입니다|이에요|이예요|이라고|으로|이야|예요|에요|라고|이고|이다|이요|야|요|은|는|이|가|을|를|로|고|다|임|도|만)'
     r'[.!?,]*$')
 # Prose, not a value: "비밀번호 8자리 이상", "5회 오류"
-_PW_PROSE = re.compile(r'^\d{1,2}(?:자리?|글자|회|번|개)(?:이상|이하|로|으로)?$')
+# Policy prose: "8자리 이상", "5회", "90일마다", "8~16자입니다" (Korean tail only; "8자리Secret!" is a value)
+_PW_PROSE = re.compile(r'^\d{1,3}(?:[~-]\d{1,3})?(?:자리?|글자|회|번|개|일|개월|주|시간|분)[가-힣.,!?~]*$')
 _PW_EMPTY = {'없음', '미입력', '미설정', '동일', '변경', '생략', '비공개', '모름'}
 
 
-def _pw_value_ok(value):
-    return bool(value) and not _PW_PLACEHOLDER.match(value) and not _TOKEN.search(value) \
-        and not value.startswith(('[', '$', '{{', '<', '%'))  # bare value stops at '}': '{{SECRET'
+def _pw_value_ok(value, quoted=False):
+    if not value or _PW_PLACEHOLDER.match(value) or _TOKEN.search(value):
+        return False
+    # A bare value stops at '}' ('{{SECRET'), so prefixes alone mark it as a placeholder; a
+    # quoted value is complete, and only a full placeholder match excludes it ('"$Abc123!"').
+    return quoted or not value.startswith(('[', '$', '{{', '<', '%'))
 
 
 _CLOSE = {')': '(', ']': '[', '}': '{'}
@@ -337,24 +347,37 @@ def _scan(rx, text):
     pos = 0
     while (m := rx.search(text, pos)) is not None:
         yield m
-        if m.group('v') is not None:
+        if m.group('v') is not None and m.group('sep') is not None \
+                and '\n' in text[m.end('sep'):m.start('v')]:
+            # The value came from the next line: rescan that line ("password:\npassword2: x").
+            pos = m.start('v')
+        elif m.group('v') is not None:
             pos = max(m.start() + 1, m.start('v') + len(_cut_at_delimiter(m.group('v'))))
         else:
             pos = m.end()
 
 
+def _next_line_key(m, g):
+    """A value taken from the next line ("password:\nusername: alice") that is itself a key."""
+    return '\n' in m.string[m.end('sep'):m.start(g)] and bool(re.match(r'[^\s"\'`:=]+[:=]', m.group(g)))
+
+
 def _passwords(text):
     for m in _scan(_PW_KV_RE, text):
         g, val = _quoted(m)
+        if g is None and _next_line_key(m, 'v'):
+            continue
         if g is None:
             g, val = 'v', _bare_pw(m.group('v'), assignment=m.group('sep') != ':' and m.group('sep') != '：')
-        if val and _pw_value_ok(val):
+        if val and _pw_value_ok(val, quoted=g != 'v'):
             yield _cand('PASSWORD', m.start(g), m.start(g) + len(val), 0.92)
     for m in _URL_CRED_RE.finditer(text):
         if _pw_value_ok(m.group('pw')):
             yield _cand('PASSWORD', m.start('pw'), m.end('pw'), 0.95)
     for m in _scan(_KO_PW_RE, text):
         g, val = _quoted(m)
+        if g is None and m.group('sep') is not None and _next_line_key(m, 'v'):
+            continue
         if g is None:
             g, val = 'v', _bare_pw(m.group('v'), assignment=m.group('sep') == '=')
             # Without ':' / '=' it may be prose ("비밀번호 재설정: …"): need an ASCII letter/digit
@@ -362,11 +385,12 @@ def _passwords(text):
             if m.group('sep') in (None, '은', '는') and (
                     len(val) < 3 or not re.search(r'[0-9A-Za-z]', val) or val.endswith((':', '：'))):
                 continue
-        if val and _pw_value_ok(val):
+        if val and _pw_value_ok(val, quoted=g != 'v'):
             yield _cand('PASSWORD', m.start(g), m.start(g) + len(val), 0.85)
 
 
 # ---- date of birth: needs a birth keyword
+_DOB_OTHER_DATE = re.compile(r'(?:변경|수정|등록|가입|작성|발급|만료|갱신|입사|계약)\s*(?:일|일자|날짜)')
 _DOB_RE = re.compile(
     r'(?<![0-9])(?:'
     r'(?P<y>(?:19|20)\d{2})\s*(?:[-./]|년)\s*(?P<m>\d{1,2})\s*(?:[-./]|월)\s*(?P<d>\d{1,2})(?:\s*일)?'
@@ -401,6 +425,10 @@ def _dobs(text):
         # Cut at an earlier value/placeholder or separator ("생년월일 …, 주문일 2024-01-01").
         before = re.split(r'[0-9\],;|]', text[max(line_start, m.start() - 20):m.start()])[-1]
         if not (_ctx(before, len(before), len(before), _DOB_CTX) or text[m.end():m.end() + 1] == '생'):
+            continue
+        # "생년월일 변경일 2024-01-01": the date belongs to a change/registration field.
+        # Only words after the nearest birth label count ("등록일 미상 생년월일: 1990-…" is a DOB).
+        if _DOB_OTHER_DATE.search(before[_last_pos(before.lower(), _DOB_CTX) + 1:]):
             continue
         yield _cand('DOB', m.start(), m.end(), 0.85)
 
@@ -482,4 +510,25 @@ def password_first(text: str, spans) -> list[dict]:
             elif not any(p['start'] <= s['start'] and s['end'] <= p['end'] for p in hits):
                 hits[0]['start'] = min(hits[0]['start'], s['start'])
                 hits[0]['end'] = max(hits[0]['end'], s['end'])
-    return rest + pw
+    return _containers_first(rest + pw)
+
+
+# Structured values that can contain other rule matches ("계좌1: 123-010-1234-5678").
+_CONTAINERS = frozenset({'ACCOUNT', 'CARD', 'ID_NUMBER'})
+
+
+def _containers_first(spans):
+    """A shorter non-secret match (phone, business number) inside an account/card/ID value is
+    part of that value: drop it, or widen the container on a partial overlap."""
+    cont = [s for s in spans if s['type'] in _CONTAINERS]
+    keep = []
+    for s in spans:
+        if s['type'] in _CONTAINERS:
+            continue
+        hits = [c for c in cont if _overlaps(c, s)]
+        if not hits or s['type'] in ('PASSWORD', 'API_KEY', 'ACCESS_TOKEN'):
+            keep.append(s)
+            continue
+        c = hits[0]
+        c['start'], c['end'] = min(c['start'], s['start']), max(c['end'], s['end'])
+    return keep + cont
