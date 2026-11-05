@@ -6,9 +6,12 @@ Flow:
   POST /process {text}  -> server runs local_ai (detect + pseudonymize) and
                            grades the result; returns masked text + metadata
                            and a work_id. Raw text stays in memory only.
-  POST /process/decide {work_id, action, reason?}
+  POST /process/decide {work_id, action, reason?, reason_text?, user_id?,
+                        dept?, target_ai?, reverted?}
                         -> builds a log event from the stored metadata + the
-                           user's choice and persists it (with queue
+                           user's choice, with one item per masked span
+                           (type, decision, value HMAC, masked preview; never
+                           the value), and persists it (with queue
                            classification). Returns the text to send onward.
                            For send_transformed the work item is kept alive so
                            the AI reply can be de-pseudonymized later.
@@ -30,6 +33,11 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Response
 
 from app import crud
+from app.decide_items import (
+    build_items,
+    check_reverted,
+    partially_restored,
+)
 from app.detectors import (
     MODEL_DIR_ENV,
     SLM_DIR_ENV,
@@ -148,6 +156,7 @@ def process_text(body: ProcessIn):
         remaining_count=len(result.remaining),
         # The version this detection used (issues #47, #49).
         policy_version=applied.version,
+        spans=tuple(getattr(result, "spans", ())),
     )
 
     return ProcessOut(
@@ -167,6 +176,15 @@ def decide(body: DecideIn):
     if item is None:
         raise HTTPException(status_code=404, detail="unknown or expired work_id")
 
+    reverted = None
+    if body.reverted is not None:
+        try:
+            reverted = check_reverted(item.spans, body.reverted)
+        except ValueError as exc:
+            # A client mistake must not consume the work: keep it for a retry.
+            store.put(item)
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
     keep_session = body.action == Action.send_transformed
     try:
         event_in = build_event(
@@ -178,6 +196,11 @@ def decide(body: DecideIn):
             detection_confidence=Confidence(item.detection_confidence),
             action=body.action,
             reason=body.reason,
+            user_id=body.user_id,
+            dept=body.dept,
+            target_ai=body.target_ai,
+            reason_text=body.reason_text,
+            items=build_items(item.spans, body.action, reverted),
             policy_version=item.policy_version,
         )
         saved = crud.insert_event(event_in)
@@ -185,6 +208,8 @@ def decide(body: DecideIn):
         # Decide what the client should actually send onward.
         if body.action == Action.send_transformed:
             outgoing = item.masked_text
+        elif body.action == Action.revert_original and reverted is not None:
+            outgoing = partially_restored(item.masked_text, item.spans, reverted)
         elif body.action in (Action.send_as_is, Action.revert_original):
             outgoing = item.original_text
         else:  # cancel

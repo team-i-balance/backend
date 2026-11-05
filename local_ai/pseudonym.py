@@ -6,7 +6,7 @@ mapping is written to disk, logged, or sent over a network by this module.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 
 
@@ -85,6 +85,16 @@ def _generalize(kind: str, value: str) -> str | None:
 
 
 @dataclass(frozen=True)
+class MaskedSpan:
+    """One masked span of a pseudonymize call. ``value`` is raw: memory only, never log it."""
+
+    kind: str
+    value: str = field(repr=False)
+    output: str          # placeholder, or the fixed 삭제/태그/일반화 output
+    restorable: bool     # True when ``output`` is this session's restorable placeholder
+
+
+@dataclass(frozen=True)
 class _Span:
     start: int
     end: int
@@ -133,6 +143,12 @@ class PseudonymSession:
         self._closed = False
 
     def pseudonymize(self, text: str, detections: Sequence[Mapping[str, object]]) -> str:
+        return self.pseudonymize_spans(text, detections)[0]
+
+    def pseudonymize_spans(
+        self, text: str, detections: Sequence[Mapping[str, object]],
+    ) -> tuple[str, tuple[MaskedSpan, ...]]:
+        """Like ``pseudonymize``, also returning each masked span in text order."""
         if self._closed:
             raise PseudonymError("session is closed")
         spans = _spans(text, detections)
@@ -146,10 +162,12 @@ class PseudonymSession:
         literal_tokens = set(_PLACEHOLDER.findall(text))
         occupied = self._reserved_literals | literal_tokens | set(mapping.values())
         replacements: list[tuple[int, int, str]] = []
+        masked: list[MaskedSpan] = []
         for span in spans:
             fixed = self._fixed_output(span, text[span.start:span.end])
             if fixed is not None:
                 replacements.append((span.start, span.end, fixed))
+                masked.append(MaskedSpan(span.kind, text[span.start:span.end], fixed, False))
                 continue
             key = (span.kind, text[span.start:span.end])
             token = mapping.get(key)
@@ -164,13 +182,14 @@ class PseudonymSession:
                 mapping[key] = token
                 occupied.add(token)
             replacements.append((span.start, span.end, token))
+            masked.append(MaskedSpan(span.kind, text[span.start:span.end], token, True))
         result = text
         for start, end, token in reversed(replacements):
             result = result[:start] + token + result[end:]
         self._mapping = mapping
         self._next = counters
         self._reserved_literals.update(literal_tokens)
-        return result
+        return result, tuple(masked)
 
     def reserve_literals(self, texts) -> None:
         """Keep placeholder-shaped text that a whole document already contains unassigned.

@@ -20,6 +20,9 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | GET    | `/events/{event_id}/reason` | api | 사유 필요 여부·재요청 시각(`reason_requested_at`) 조회, `no-store` ([문서](docs/event-reason-api.md)) |
 | POST   | `/events/{event_id}/reason-request` | security | 보안팀이 직원에게 사유 재요청 |
 | POST   | `/process/preview` | api | 작성 중인 프롬프트의 탐지 유형과 원문 위치(유니코드 코드 포인트, 끝 제외)를 반환합니다. 작업·매핑·로그를 생성하지 않습니다. |
+| POST   | `/process` | api | 텍스트 탐지·가명 처리, `work_id`와 가린 문장(`masked_text`) 반환. 원문은 메모리에만 둡니다. |
+| POST   | `/process/decide` | api | 직원 선택(`action`)으로 이벤트 저장, 보낼 문장 반환. 선택 `user_id`·`dept`·`target_ai`·`reason_text`·`reverted`(일부 원문 복원). 서버가 탐지 구간별 `items`(값 HMAC·가린 미리보기)를 채웁니다 ([문서](docs/process-decide-api.md)) |
+| POST   | `/process/restore` | api | `send_transformed`로 보낸 작업의 AI 답변 가명 복원 |
 | POST   | `/files/sanitize` | api | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
 | GET    | `/files/{work_id}/download` | api | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
 | POST   | `/files/{work_id}/restore` | api | 파일 매핑으로 AI 답변 복원; 만료 전까지 여러 번 |
