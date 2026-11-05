@@ -27,6 +27,7 @@ class FileWorkItem:
     summary: FileSummary
     expires_at: datetime
     deadline: float = field(repr=False)
+    downloaded: bool = False
 
     def close(self) -> None:
         try:
@@ -38,6 +39,7 @@ class FileWorkItem:
 class FileWorkStore:
     """add transfers ownership on success; take transfers it to the caller.
 
+    take_download consumes only the file bytes, leaving the session until expiry.
     take is internal, not an authorization check. A future AI route must check
     access before taking a work item, and close it in finally after use.
     """
@@ -73,9 +75,23 @@ class FileWorkStore:
             return item
 
     def take(self, work_id: str) -> FileWorkItem | None:
+        """Transfer the whole work item, possibly already downloaded, to a caller."""
         with self._lock:
             self._purge_locked()
             return self._pop_locked(work_id)
+
+    def take_download(self, work_id: str) -> bytes | None:
+        """Claim a copy once without consuming its restoration mapping or TTL."""
+        with self._lock:
+            self._purge_locked()
+            item = self._items.get(work_id)
+            if item is None or item.downloaded:
+                return None
+            data = item.file_bytes
+            item.downloaded = True
+            item.file_bytes = b""
+            self._bytes -= len(data)
+            return data
 
     def discard(self, work_id: str) -> None:
         with self._lock:

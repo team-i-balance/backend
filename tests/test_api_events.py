@@ -23,7 +23,9 @@ def test_create_event_returns_record_with_queue(client):
 
 
 def test_health_and_root_still_work(client):
-    assert client.get("/health").json() == {"status": "ok"}
+    body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert body["detection"] in ("model", "rules_only")
     assert client.get("/").json()["service"] == "ibalance-backend"
 
 

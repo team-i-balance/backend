@@ -1,7 +1,9 @@
 """Small actual-model HTTP smoke suite, separate from detector-double API tests."""
 from io import BytesIO
+from datetime import datetime, timezone
 import os
 import socket
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
@@ -12,10 +14,27 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def fixed_workbook_clock(monkeypatch):
+    """Keep generated metadata stable; these smoke tests check API integration."""
+    import openpyxl.packaging.core as core
+    import openpyxl.writer.excel as writer
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 11, 5, 7, 52, 50, tzinfo=timezone.utc)
+            return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+
+    clock = SimpleNamespace(datetime=FixedDatetime, timezone=timezone)
+    monkeypatch.setattr(core, "datetime", clock)
+    monkeypatch.setattr(writer, "datetime", clock)
+
+
 @pytest.mark.parametrize("case,status", [
     ("public", "READY"), ("pii", "READY"), ("hidden_secret", "BLOCKED"),
 ])
-def test_real_model_upload(client, case, status):
+def test_real_model_upload_and_download(client, case, status):
     book = Workbook()
     book.active.append(["품목", "수량", "금액"])
     book.active.append(["복사용지", 2, 15000])
@@ -38,13 +57,18 @@ def test_real_model_upload(client, case, status):
 
     from app.file_store import store
 
-    item = store.take(result["work_id"])
+    download = client.get(f"/files/{result['work_id']}/download")
     if status == "BLOCKED":
-        assert item is None and result["grade"] == "confidential_C"
+        assert download.status_code == 404 and result["grade"] == "confidential_C"
+        assert store.take(result["work_id"]) is None
         return
+    assert download.status_code == 200
+    assert client.get(f"/files/{result['work_id']}/download").status_code == 404
+    item = store.take(result["work_id"])
     assert item is not None
     try:
-        copy = load_workbook(BytesIO(item.file_bytes))
+        assert item.downloaded and item.file_bytes == b""
+        copy = load_workbook(BytesIO(download.content))
         assert (copy.active["B2"].value, copy.active["C2"].value) == (2, 15000)
         if case == "pii":
             protected = copy.active["A3"].value
