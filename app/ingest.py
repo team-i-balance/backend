@@ -13,6 +13,7 @@ from app.schemas import (
     Action,
     Confidence,
     EventIn,
+    EventItem,
     Grade,
     Reason,
 )
@@ -44,6 +45,13 @@ def build_event(
     detection_confidence: Confidence,
     action: Action,
     reason: Optional[Reason],
+    # Context fields (issue #21) — all optional for backward compatibility
+    user_id: Optional[str] = None,
+    dept: Optional[str] = None,
+    target_ai: Optional[str] = None,
+    device_id: Optional[str] = None,
+    reason_text: Optional[str] = None,
+    items: Optional[list[EventItem]] = None,
 ) -> EventIn:
     """Construct the EventIn for a user's decision on a processed item."""
     # reverted: user rolled back to the original (revert_original).
@@ -62,4 +70,10 @@ def build_event(
         reverted=reverted,
         restored=False,
         content_hash=hash_text(original_text),
+        user_id=user_id,
+        dept=dept,
+        target_ai=target_ai,
+        device_id=device_id,
+        reason_text=reason_text,
+        items=items or [],
     )
