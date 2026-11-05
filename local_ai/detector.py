@@ -96,6 +96,13 @@ _JOSA_ANY = ('에게서', '한테서', '께서는', '으로부터', '에게', '�
 _JOSA_FINAL = ('으로', '은', '을', '과', '이')
 _JOSA_NO_FINAL = ('는', '를', '와', '가')
 _COMPOUND_SURNAMES = ('남궁', '황보', '선우', '제갈', '사공', '서문', '독고', '동방')
+# Single-character particles that are also common name-final syllables.
+# For NAME spans, these are only stripped when the stem is long enough (≥4 chars)
+# to make it unlikely the character is part of the actual name.
+# e.g. "김다솜이" (3-char stem) must not be trimmed — "이" may be the last
+# syllable of the given name, not the subject particle — but "홍길동주이"
+# (4-char stem) is safely trimmed.
+_JOSA_AMBIGUOUS_SINGLE = frozenset({'이', '가'})
 
 
 def _trim_korean_particle(text: str, span: dict) -> dict:
@@ -141,6 +148,14 @@ def _trim_korean_particle(text: str, span: dict) -> dict:
         if suffix in _JOSA_FINAL and not has_final:
             continue
         if suffix in _JOSA_NO_FINAL and has_final:
+            continue
+        # For NAME spans, single-char particles that are also common name-final
+        # syllables ('이', '가') require a longer stem before we are confident
+        # the character is a particle and not part of the name itself.
+        # "박지훈이" and "김다솜이" are indistinguishable without context:
+        # the model may have correctly captured the full 4-syllable name.
+        # Require stem ≥ 4 Hangul chars for these ambiguous particles on NAME.
+        if span['type'] == 'NAME' and suffix in _JOSA_AMBIGUOUS_SINGLE and hangul_count < 4:
             continue
         return {**span, 'end': end - len(suffix)}
     return span
