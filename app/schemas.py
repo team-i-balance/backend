@@ -237,6 +237,23 @@ class ProcessIn(BaseModel):
         return self
 
 
+class PreviewIn(BaseModel):
+    """A draft revision, independent of the decision and restoration sessions."""
+    text: str = Field(min_length=1, max_length=50_000)
+    rules_only: bool = False
+
+
+class PreviewSpan(BaseModel):
+    # Half-open Python Unicode code point offsets into exactly this request.
+    start: int
+    end: int
+    type: str
+
+
+class PreviewOut(BaseModel):
+    spans: list[PreviewSpan]
+
+
 class ProcessOut(BaseModel):
     """Result of /process. Contains the masked text, never the original."""
 

@@ -18,6 +18,7 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 | POST   | `/events/{event_id}/reason` | api | 민감 원문 전송 후 직원 사유 제출·저장 |
 | GET    | `/events/{event_id}/reason` | api | 사유 필요 여부·재요청 시각(`reason_requested_at`) 조회, `no-store` ([문서](docs/event-reason-api.md)) |
 | POST   | `/events/{event_id}/reason-request` | security | 보안팀이 직원에게 사유 재요청 |
+| POST   | `/process/preview` | api | 작성 중인 프롬프트의 탐지 유형과 원문 위치(유니코드 코드 포인트, 끝 제외)를 반환합니다. 작업·매핑·로그를 생성하지 않습니다. |
 | POST   | `/files/sanitize` | api | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
 | GET    | `/files/{work_id}/download` | api | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
 | POST   | `/files/{work_id}/restore` | api | 파일 매핑으로 AI 답변 복원; 만료 전까지 여러 번 |

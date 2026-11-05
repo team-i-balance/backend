@@ -27,7 +27,7 @@ the LocalSession.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 
 from app import crud
 from app.detectors import (
@@ -47,6 +47,9 @@ from app.schemas import (
     DecideIn,
     DecideOut,
     Grade,
+    PreviewIn,
+    PreviewOut,
+    PreviewSpan,
     ProcessIn,
     ProcessOut,
     RestoreIn,
@@ -73,21 +76,40 @@ def _get_detector(rules_only: bool):
         ) from None
 
 
-@router.post("", response_model=ProcessOut)
-def process_text(body: ProcessIn):
-    from local_ai.pipeline import LocalSession
+def _active_detection(rules_only):
     from app.policy import store as policy_store
     from app.policy_apply import apply_policy_to_detector
 
-    detector = _get_detector(body.rules_only)
+    detector = _get_detector(rules_only)
     # Read the active policy once and compile it (cached while unchanged). The
     # request detects with that snapshot only, so a concurrent deploy cannot mix
     # policies, and the logged version is the one used (#47, #49). A policy that
     # fails to apply leaves the previous one in effect; ``applied.version`` says which.
     applied = apply_policy_to_detector(detector, policy_store.current())
+    return applied.bind(detector), applied
+
+
+@router.post("/preview", response_model=PreviewOut)
+def preview_text(body: PreviewIn, response: Response):
+    """Live prompt highlighting. No work item, original value, mapping or event is created."""
+    detector, _ = _active_detection(body.rules_only)
+    try:
+        spans = [PreviewSpan(start=s["start"], end=s["end"], type=s["type"])
+                 for s in detector.detect(body.text)]
+    except Exception:
+        raise HTTPException(status_code=422, detail="draft detection failed") from None
+    response.headers["Cache-Control"] = "no-store"
+    return PreviewOut(spans=spans)
+
+
+@router.post("", response_model=ProcessOut)
+def process_text(body: ProcessIn):
+    from local_ai.pipeline import LocalSession
+
+    detector, applied = _active_detection(body.rules_only)
     if body.file_work_id is None:
         # The pseudonym mapping is per-work; the detector is shared.
-        session = LocalSession(applied.bind(detector))
+        session = LocalSession(detector)
     else:
         session = file_store.lend(body.file_work_id)
         if session is None:

@@ -359,3 +359,17 @@ def test_e2e_process_decide_stats(client):
     # Export round-trips and contains no raw text.
     exp = client.post("/logs/export").json()
     assert exp["exported"] == 3
+
+
+def test_live_draft_ranges_without_work_or_logging(client, monkeypatch):
+    from app.process_router import store
+    def unexpected(*args, **kwargs):
+        raise AssertionError("a preview must not create work")
+    monkeypatch.setattr(store, "add", unexpected)
+    text = "🧪 연락 010-2345-6789, 또 010-2345-6789"
+    response = client.post("/process/preview", json={"text": text, "rules_only": True})
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    starts = [text.index("010"), text.rindex("010")]
+    assert response.json() == {"spans": [{"start": i, "end": i + 13, "type": "PHONE"} for i in starts]}
+    assert "010-2345" not in response.text
