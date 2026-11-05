@@ -28,12 +28,10 @@ class FpGroup(BaseModel):
     status: FpStatus
     report_count: int
     employee_count: int
+    # Newest event that reported this value; the page cursor (see /logs/events).
+    last_event_id: int
     last_reported_at: str
     preview: Optional[str]
     types: list[str]
     # Latest decision. Present on a reopened group too (the previous verdict).
     decision: Optional[FpDecisionOut]
-
-
-class FpPage(BaseModel):
-    items: list[FpGroup]

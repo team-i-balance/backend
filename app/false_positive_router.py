@@ -4,30 +4,18 @@
 - POST /false-positives/{value_hash}/decide
 - POST /events/{event_id}/reason-request
 """
-import hashlib
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Response
-from fastapi.security import HTTPAuthorizationCredentials
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 
 from app import false_positive as fp
-from app.auth import _auth_disabled, _bearer, require_security
-from app.false_positive_schemas import FpDecideIn, FpGroup, FpPage, FpStatus, ValueHash
+from app.auth import require_security, security_principal
+from app.false_positive_schemas import FpDecideIn, FpGroup, FpStatus, ValueHash
 from app.schemas import EventOut
 
 
 def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
-
-
-def security_principal(
-    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> str:
-    """Who decided. Tokens carry no human identity yet, so record a stable,
-    non-reversible token fingerprint instead of trusting a client-sent name."""
-    if _auth_disabled() or creds is None:
-        return "auth-disabled"
-    return "security:" + hashlib.sha256(creds.credentials.encode()).hexdigest()[:12]
 
 
 def _call(operation, *args, **kwargs):
@@ -45,9 +33,16 @@ router = APIRouter(prefix="/false-positives", tags=["false-positives"], dependen
 reason_request_router = APIRouter(prefix="/events", tags=["events"], dependencies=_DEPS)
 
 
-@router.get("", response_model=FpPage)
-def list_false_positives(status: FpStatus = "open"):
-    return _call(fp.list_groups, status)
+@router.get("", response_model=list[FpGroup])
+def list_false_positives(
+    status: FpStatus = "open",
+    limit: int = Query(default=100, ge=1, le=1000),
+    cursor: Optional[int] = Query(
+        default=None, ge=1, le=2**63 - 1,
+        description="last_event_id of the last group on the previous page",
+    ),
+):
+    return _call(fp.list_groups, status, limit=limit, cursor=cursor)
 
 
 @router.post("/{value_hash}/decide", response_model=FpGroup)

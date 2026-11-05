@@ -17,32 +17,45 @@
 이런 신고는 기존처럼 `/logs/queues/detection_improve`에서 이벤트 단위로 봅니다.
 `value_hash`는 대소문자를 구분하지 않습니다(소문자로 묶음).
 
-신고 시각은 사유 제출 시각(`reason_at`)이고, 없으면 이벤트 생성 시각입니다.
-원문 전송 뒤 나중에 `POST /events/{id}/reason`으로 오탐 사유를 낸 경우도 그때 신고된 것으로 셉니다.
+신고 시각은 다음과 같습니다.
 
-### `GET /false-positives?status=open|done`
+- 항목에 직접 `reason: false_positive`를 단 경우: 이벤트 생성 시각(`created_at`). 이후 이벤트 사유가 따로 제출돼도 바뀌지 않습니다.
+- 이벤트 사유를 물려받은 경우: 사유 제출 시각(`reason_at`), 없으면 생성 시각. 원문 전송 뒤 나중에
+  `POST /events/{id}/reason`으로 오탐 사유를 내면 그때 새로 신고된 것으로 셉니다.
 
-`status` 기본값은 `open`. 마지막 신고가 최근인 묶음부터 돌려줍니다.
+### `GET /false-positives?status=open|done&limit=100&cursor=…`
+
+`status` 기본값은 `open`. 응답은 묶음 배열이며, 그 값을 마지막으로 신고한 이벤트 ID(`last_event_id`)가 큰 순서입니다.
 
 ```json
-{
-  "items": [
-    {
-      "value_hash": "3f9a…(64자)",
-      "status": "open",
-      "report_count": 3,
-      "employee_count": 2,
-      "last_reported_at": "2026-11-05T01:02:03.456789+00:00",
-      "preview": "윤*아",
-      "types": ["NAME"],
-      "decision": null
-    }
-  ]
-}
+[
+  {
+    "value_hash": "3f9a…(64자)",
+    "status": "open",
+    "report_count": 3,
+    "employee_count": 2,
+    "last_event_id": 901,
+    "last_reported_at": "2026-11-05T01:02:03.456789+00:00",
+    "preview": "윤*아",
+    "types": ["NAME"],
+    "decision": null
+  }
+]
 ```
+
+페이지 넘김은 `/logs/events`와 같은 방식입니다([log-stats-api.md](log-stats-api.md)).
+
+- `limit`: 1~1000, 기본 100
+- `cursor`: 이전 페이지 마지막 묶음의 `last_event_id`. 서버는 `last_event_id`가 그보다 작은 묶음을 돌려줍니다.
+- 한 이벤트가 여러 값을 신고해 `last_event_id`가 같은 묶음은 한 페이지에 모두 담습니다. 그래서 페이지가 `limit`보다 조금 길 수 있습니다.
+- 받은 개수가 `limit`보다 적으면 마지막 페이지입니다. 더 없으면 `[]`입니다. 잘못된 `limit`·`cursor`는 `422`입니다.
+- `status`는 페이지를 나누기 전에 적용합니다. 조회 사이에 새 신고나 판단이 생기면 묶음이 다른 페이지나 다른 `status`로 옮겨갈 수 있습니다.
+
+집계는 SQLite 안에서 하고, 한 페이지에 나온 묶음만 preview와 시각을 더 읽습니다.
 
 | 필드 | 의미 |
 | --- | --- |
+| `last_event_id` | 그 값을 마지막으로 신고한 이벤트 ID(정렬·커서 기준) |
 | `report_count` | 신고한 이벤트 수(한 이벤트에 같은 값이 여러 번 있어도 1) |
 | `employee_count` | 서로 다른 `user_id` 수(`user_id` 없는 이벤트는 세지 않음) |
 | `preview` | 가장 최근 신고 중 preview가 있는 항목의 마스킹 값. 없으면 `null` |
@@ -65,7 +78,7 @@ Content-Type: application/json
 - `why`: 선택. 앞뒤 공백 제거 후 1~1000자
 - 다른 필드는 거부(`422`). 처리자·시각은 서버가 정합니다.
 
-성공하면 `200`과 갱신된 묶음 하나(위 `items[]` 항목과 같은 모양, `status: "done"`)를 돌려줍니다.
+성공하면 `200`과 갱신된 묶음 하나(위 목록의 원소와 같은 모양, `status: "done"`)를 돌려줍니다.
 이미 판단한 값도 다시 판단할 수 있으며, 가장 최근 판단이 현재 판단입니다.
 
 | 상태 | 의미 |
@@ -79,7 +92,8 @@ Content-Type: application/json
 ### 처리자(`by`)
 
 현재 토큰에는 사람 신원이 없습니다. 그래서 클라이언트가 보낸 이름을 믿지 않고,
-보안 토큰의 SHA-256 앞 12자리로 `security:1a2b3c4d5e6f` 형태를 기록합니다(토큰 자체는 저장하지 않음).
+`/cases`와 같은 `app.auth.security_principal`을 씁니다. 환경변수 토큰은 `security:<SHA-256 앞 12자리>`,
+dev 토큰은 `security-dev:<…>`로 기록하며 토큰 자체는 저장하지 않습니다.
 `AUTH_DISABLED=1`(테스트용)에서는 `auth-disabled`입니다.
 
 ### 저장
@@ -101,8 +115,10 @@ Content-Type: application/json
 ### `POST /events/{event_id}/reason-request`
 
 원문 전송 뒤 사유를 내지 않은 직원에게 다시 묻게 합니다. 본문은 없습니다.
-서버가 `reason_requested_at`을 지금 시각으로 바꾸고, 직원 앱은 다음 실행 때 이 값이 바뀐 것을 보고 다시 묻습니다.
-알림 발송은 하지 않습니다(추후).
+서버가 `reason_requested_at`을 지금 시각으로 바꿉니다. 직원 앱은 실행할 때 사유를 내지 않은 원문 전송 이벤트마다
+`GET /events/{id}/reason`(api 토큰, [event-reason-api.md](event-reason-api.md))을 불러
+`reason_needed=true`이고 `reason_requested_at`이 앱이 마지막으로 본 값보다 새로우면 다시 묻습니다.
+푸시 알림 발송은 하지 않습니다(추후).
 
 성공하면 `200`과 `EventOut` 전체를 돌려줍니다. 사유가 들어오기 전까지는 여러 번 호출할 수 있습니다.
 

@@ -31,7 +31,7 @@ def groups(client, status="open"):
     response = client.get("/false-positives", params={"status": status})
     assert response.status_code == 200, response.text
     assert response.headers["cache-control"] == "no-store"
-    return {g["value_hash"]: g for g in response.json()["items"]}
+    return {g["value_hash"]: g for g in response.json()}
 
 
 def decide(client, value_hash, decision="exclude", **extra):
@@ -207,7 +207,7 @@ def test_security_scope_required(anon_client):
     assert ev.status_code == 201
     by = anon_client.post(f"/false-positives/{H1}/decide", headers=h,
                           json={"decision": "keep"}).json()["decision"]["by"]
-    assert by.startswith("security:") and sec not in by
+    assert by.startswith("security-dev:") and sec not in by  # app.auth.security_principal
 
 
 # --- migration --------------------------------------------------------------
@@ -234,3 +234,85 @@ def test_migration_is_idempotent_and_keeps_decisions(tmp_path, monkeypatch):
             conn.execute("""INSERT INTO false_positive_decision
                 (value_hash, decision, decided_by, decided_at)
                 VALUES (?, 'maybe', 'x', 'y')""", (H1,))
+
+
+# --- review fixes (PR #53) --------------------------------------------------
+def test_item_level_report_keeps_creation_time_after_unrelated_reason(client):
+    # Raw send with an explicit item-level FP report, event reason still pending.
+    raw = event(client, action="send_as_is", reason=None, user_id="emp-1",
+                items=[item(H1, "윤*아", reason="false_positive")])
+    assert groups(client)[H1]["last_reported_at"] == raw["created_at"]
+    decide(client, H1, "keep")
+    # The employee later explains the raw send itself as business need.
+    r = client.post(f"/events/{raw['id']}/reason",
+                    json={"reason": "business_need", "text": "업무상 필요"})
+    assert r.status_code == 200
+    assert groups(client) == {}  # not reopened
+    assert groups(client, "done")[H1]["last_reported_at"] == raw["created_at"]
+
+
+def page(client, **params):
+    response = client.get("/false-positives", params=params)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_groups_paginate_by_last_event_id_cursor(client):
+    hashes = [f"{i:x}" * 64 for i in range(1, 6)]
+    ids = [report(client, h)["id"] for h in hashes]
+    first = page(client, limit=2)
+    assert [g["last_event_id"] for g in first] == [ids[4], ids[3]]
+    second = page(client, limit=2, cursor=first[-1]["last_event_id"])
+    assert [g["last_event_id"] for g in second] == [ids[2], ids[1]]
+    third = page(client, limit=2, cursor=second[-1]["last_event_id"])
+    assert [g["last_event_id"] for g in third] == [ids[0]]
+    assert page(client, limit=2, cursor=ids[0]) == []
+    # Status filter applies before paging.
+    decide(client, hashes[4], "keep")
+    assert [g["value_hash"] for g in page(client, limit=1)] == [hashes[3]]
+    assert [g["value_hash"] for g in page(client, status="done", limit=1)] == [hashes[4]]
+    for bad in ({"limit": 0}, {"limit": 1001}, {"cursor": 0}, {"cursor": "x"}):
+        assert client.get("/false-positives", params=bad).status_code == 422
+
+
+def test_groups_sharing_last_event_are_not_split_across_pages(client):
+    report(client, H2)
+    shared = event(client, user_id="emp-1", items=[item(H1), item("c" * 64)])
+    first = page(client, limit=1)
+    assert [g["value_hash"] for g in first] == ["c" * 64, H1]
+    assert {g["last_event_id"] for g in first} == {shared["id"]}
+    rest = page(client, limit=1, cursor=shared["id"])
+    assert [g["value_hash"] for g in rest] == [H2]
+
+
+def test_employee_can_poll_reason_status_and_see_re_request(anon_client):
+    api = anon_client.post("/auth/dev-token", json={"scope": "api"}).json()["token"]
+    sec = anon_client.post("/auth/dev-token", json={"scope": "security"}).json()["token"]
+    emp = {"Authorization": f"Bearer {api}"}
+    sec_h = {"Authorization": f"Bearer {sec}"}
+    raw = anon_client.post("/logs/events", headers=emp, json={
+        "grade": "sensitive_S", "action": "send_as_is", "detected_types": ["NAME"],
+    }).json()
+    status = anon_client.get(f"/events/{raw['id']}/reason", headers=emp)
+    assert status.status_code == 200
+    assert status.headers["cache-control"] == "no-store"
+    before = status.json()
+    assert before == {"event_id": raw["id"], "reason_needed": True,
+                      "reason_requested_at": raw["reason_requested_at"],
+                      "reason": None, "reason_at": None}
+    r = anon_client.post(f"/events/{raw['id']}/reason-request", headers=sec_h)
+    assert r.status_code == 200
+    after = anon_client.get(f"/events/{raw['id']}/reason", headers=emp).json()
+    assert after["reason_needed"] is True
+    assert after["reason_requested_at"] > before["reason_requested_at"]
+    anon_client.post(f"/events/{raw['id']}/reason", headers=emp,
+                     json={"reason": "false_positive", "text": "이름 아님"})
+    done = anon_client.get(f"/events/{raw['id']}/reason", headers=emp).json()
+    assert done["reason_needed"] is False and done["reason"] == "false_positive"
+    public = anon_client.post("/logs/events", headers=emp, json={
+        "grade": "public_O", "action": "send_as_is"}).json()
+    r = anon_client.get(f"/events/{public['id']}/reason", headers=emp)
+    assert r.json()["reason_needed"] is False
+    r = anon_client.get("/events/999999/reason", headers=emp)
+    assert (r.status_code, r.json()["detail"]) == (404, "EVENT_NOT_FOUND")
+    assert anon_client.get(f"/events/{raw['id']}/reason").status_code == 401
