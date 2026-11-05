@@ -28,8 +28,10 @@ jobs:
 
       - name: Health check
         run: |
+          # HTTPS via Caddy (self-signed cert -> -k). uvicorn is bound to
+          # 127.0.0.1 and no longer reachable on :8501 externally.
           for i in 1 2 3 4 5; do
-            if curl -sf "http://${{ secrets.SERVER_HOST }}:8501/health"; then
+            if curl -sfk "https://${{ secrets.SERVER_HOST }}/health"; then
               echo ""
               echo "Backend healthy"
               exit 0
