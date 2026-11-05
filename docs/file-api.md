@@ -41,13 +41,18 @@ curl -X POST http://localhost:8000/files/sanitize \
   "grade": "sensitive_S",
   "reason": null,
   "summary": {
-    "changed_cells": 12,
+    "changed_cells": 4,
     "removed_comments": 2,
     "removed_sheets": 1,
     "removed_rows": 0,
     "removed_columns": 0
   },
-  "expires_at": "2026-11-05T09:10:00Z"
+  "expires_at": "2026-11-05T09:10:00Z",
+  "detected_types": ["NAME", "PHONE"],
+  "detected_count": 6,
+  "detected_counts": {"NAME": 2, "PHONE": 2},
+  "hidden_counts": {"NAME": 2},
+  "blocked_types": null
 }
 ```
 
@@ -61,6 +66,27 @@ curl -X POST http://localhost:8000/files/sanitize \
 실패·차단의 `summary`와 `expires_at`은 `null`입니다. 원본 파일명, 원문, 보호본 바이트,
 매핑표는 업로드 JSON 응답에 들어가지 않습니다. 응답은 `Cache-Control: no-store`입니다.
 `READY`는 구현된 검사 통과를 뜻하며, 모델이 놓친 개인정보까지 없음을 보증하지는 않습니다.
+
+### 탐지 유형·건수
+
+`READY`와 `BLOCKED`는 찾은 유형과 건수를 함께 돌려줍니다. 원문 값, 셀 위치, 파일 이름은
+담지 않습니다. 유형 이름은 텍스트 API(`/process`)의 `detected_types`와 같습니다.
+`FAILED`는 검사를 끝내지 못했으므로 아래 필드가 모두 `null`입니다.
+
+| 필드 | 의미 |
+| --- | --- |
+| `detected_types` | 파일 어디에서든 찾은 유형. 등급은 이 유형으로 정합니다. |
+| `detected_counts` | 유형별, 보호본 칸에 들어가 자리표시로 가린 곳 수 |
+| `hidden_counts` | 유형별, 보호본에서 빠지는 곳에서 찾은 수: 원본 파일명, 문서 속성, 숫자 서식, 시트 이름, 메모와 작성자, 숨긴 시트·행·열, 서식으로 숨긴 셀 |
+| `detected_count` | 파일 전체에서 찾은 곳 수 = `detected_counts` 합 + `hidden_counts` 합 |
+| `blocked_types` | `BLOCKED`일 때만 파일을 기밀로 만든 유형(예: `["API_KEY"]`). 그 외에는 `null` |
+
+- 같은 값이 여러 칸에 있으면 칸마다 셉니다. 한 칸에 이름이 둘이면 2입니다.
+- 같은 곳을 두 번 읽는 경우는 한 곳으로 셉니다: 0으로 채운 숫자 셀의 표시값과 저장값,
+  숫자 서식과 그 서식이 표시하는 문구. 유형별로 더 많이 찾은 쪽 수를 씁니다.
+- `BLOCKED`도 같은 기준으로 칸과 빠지는 곳을 나눕니다. 보호본은 만들지 않습니다.
+  `blocked_types`에는 그 자체로 기밀 등급인 유형만 넣고, 함께 찾은 이름 등은
+  `detected_types`에만 둡니다.
 
 | HTTP | reason / 용도 |
 | --- | --- |
