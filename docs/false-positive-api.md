@@ -10,9 +10,11 @@
 이벤트의 `items[]` 항목 하나가 아래 조건을 모두 만족하면 그 값에 대한 오탐 신고 1건입니다.
 
 - 항목의 사유(`items[].reason`)가 `false_positive`이거나, 항목 사유가 없고 이벤트 사유(`reason`)가 `false_positive`
+  (단 `decision: converted` 항목은 가린 채 보낸 값이라 이벤트 사유를 물려받지 않습니다)
 - 항목에 `value_hash`(조직 키 HMAC-SHA256)가 있음
 - 테스트 이벤트(`test=true`)가 아님
 
+`/process/decide`로 만든 이벤트는 서버가 `items`를 채웁니다([텍스트 전송 결정 API](process-decide-api.md)).
 `value_hash`가 없는 항목, `items`가 비어 있는 이벤트는 같은 값끼리 묶을 수 없어 이 목록에 나오지 않습니다.
 이런 신고는 기존처럼 `/logs/queues/detection_improve`에서 이벤트 단위로 봅니다.
 `value_hash`는 대소문자를 구분하지 않습니다(소문자로 묶음).
@@ -125,7 +127,7 @@ dev 토큰은 `security-dev:<…>`로 기록하며 토큰 자체는 저장하지
 | 상태 | 의미 |
 | --- | --- |
 | `404 EVENT_NOT_FOUND` | 없는 이벤트 |
-| `409 REASON_NOT_REQUESTED` | 민감(`sensitive_S`) 원문 전송(`send_as_is`)이 아닌 이벤트 |
+| `409 REASON_NOT_REQUESTED` | 민감(`sensitive_S`)·기밀(`confidential_C`) 원문 전송(`send_as_is`·`revert_original`)이 아닌 이벤트 |
 | `409 REASON_ALREADY_SUBMITTED` | 이미 사유가 있는 이벤트(전송 때 사유를 고른 경우 포함) |
 | `422` | 잘못된 ID |
 

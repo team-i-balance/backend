@@ -44,7 +44,7 @@
    → **violation_candidate** (위반 후보 큐)
 
 3. `grade != public_O` **그리고** `action in {send_as_is, revert_original}` **그리고** `detection_confidence == high`
-   → **real_violation** (실제 위반 큐, 보안팀 콘솔의 "필수 검토")
+   → **real_violation** (실제 위반 큐)
    - 민감·기밀 정보가 확실히 잡혔는데 원문을 그대로 보냈거나, 사유 없이 되돌려 원문을 보낸 경우.
    - 사유가 있는 되돌림(`false_positive`, `business_need`)은 규칙 1·2가 먼저 가져간다.
    - 취소(`cancel`)는 아무것도 전송되지 않았으므로 위반이 아니다 (이슈 #20).
@@ -58,6 +58,24 @@
 
 > 비고: 규칙 3은 규칙 4·5보다 먼저 평가되므로, "민감·기밀 + 확실한 탐지 + 원문 전송"은
 > real_violation 으로, 그 밖의 원문 전송·취소는 pre_warning 으로 간다.
+
+### 4-1. 보안팀 검토 건 (`/cases`, 이슈 #60·#62)
+
+로그 큐와 별개로, 원문이 외부로 나간 아래 이벤트는 보안팀 검토 건이 된다.
+탐지 신뢰도는 보지 않는다. 기준 코드는 `app/case_crud.py`(`_ELIGIBLE`, `_NEED`).
+
+| 등급 | 대상 (`action in {send_as_is, revert_original}`) | `need` |
+| --- | --- | --- |
+| 민감 S | `reason`이 없음 | `required` |
+| 민감 S | 보낼 때 `reason == business_need` (`reason_requested_at` 없음) | `optional` |
+| 민감 S | 사유 요청(`reason_requested_at`) 뒤 늦게 낸 사유(코드 무관) | `required` |
+| 기밀 C | 사유와 상관없이 전부 (`false_positive` 포함) | `required` |
+
+- 민감 S를 보낼 때 `false_positive`를 고른 건은 검토 건이 아니라 오탐 신고(`/false-positives`)로 본다.
+- 기밀 C 원문 전송은 서버가 막지 않고 검토 건으로 만든다. 직원 앱이 C 원문 전송 버튼을 막는다.
+- 일괄 종결(`close-bulk`)은 `optional` 건만 받는다.
+- 사유 대기(`reason_requested_at`): S·C 원문 전송을 사유 없이 보내면 이벤트 생성 시각으로 정한다.
+  직원은 이 이벤트에 사유를 낼 수 있고(`POST /events/{id}/reason`), 보안팀은 다시 요청할 수 있다.
 
 ## 5. 집계 지표 (조회 시 계산)
 

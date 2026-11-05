@@ -1,7 +1,9 @@
 """False-positive report clustering and security-team decisions (issue #48).
 
 A report is an event item whose effective reason (item reason, else event
-reason) is ``false_positive`` and that carries a ``value_hash``. Items without
+reason) is ``false_positive`` and that carries a ``value_hash``. A ``converted``
+item (still masked) does not inherit the event reason: the employee reported
+only the values they sent as original (#63). Items without
 a value_hash cannot be clustered and are not listed here; those events remain
 visible through /logs (detection_improve queue).
 
@@ -17,10 +19,9 @@ Aggregation runs in SQLite and pages by ``last_event_id`` (like /logs/events'
 """
 from datetime import datetime, timezone
 
-from app.crud import _row_to_dict
+from app.crud import _row_to_dict, is_reason_followup_target
 from app.db import get_conn
 from app.log_time import sql_utc_microseconds
-from app.schemas import Action, Grade
 
 _ITEM_REASON = "json_extract(j.value, '$.reason')"
 _ITEM_HASH = "lower(json_extract(j.value, '$.value_hash'))"
@@ -35,7 +36,9 @@ _REPORTS = f"""
     FROM event_log e, json_each(CASE WHEN json_valid(e.items) THEN e.items ELSE '[]' END) j
     WHERE e.is_test = 0
       AND (e.reason = 'false_positive' OR instr(e.items, 'false_positive') > 0)
-      AND COALESCE({_ITEM_REASON}, e.reason) = 'false_positive'
+      AND COALESCE({_ITEM_REASON},
+                   CASE WHEN json_extract(j.value, '$.decision') = 'converted'
+                        THEN NULL ELSE e.reason END) = 'false_positive'
       AND json_extract(j.value, '$.value_hash') IS NOT NULL
 """
 
@@ -156,7 +159,7 @@ def decide(value_hash: str, *, decision: str, why: str | None, decided_by: str) 
 
 
 def request_reason(event_id: int) -> dict:
-    """Ask the employee again: bump reason_requested_at on an unexplained raw send.
+    """Ask the employee again: bump reason_requested_at on an unexplained S/C raw send.
 
     Employee clients observe this through GET /events/{id}/reason.
     """
@@ -165,7 +168,7 @@ def request_reason(event_id: int) -> dict:
         row = conn.execute("SELECT * FROM event_log WHERE id = ?", (event_id,)).fetchone()
         if row is None:
             raise FalsePositiveError(404, "EVENT_NOT_FOUND")
-        if row["grade"] != Grade.sensitive.value or row["action"] != Action.send_as_is.value:
+        if not is_reason_followup_target(row["grade"], row["action"]):
             raise FalsePositiveError(409, "REASON_NOT_REQUESTED")
         if row["reason_at"] is not None or row["reason"] is not None:
             raise FalsePositiveError(409, "REASON_ALREADY_SUBMITTED")

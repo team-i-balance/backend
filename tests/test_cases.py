@@ -54,30 +54,94 @@ def page(client, queue="required", **params):
     return response.json()
 
 
-def test_queues_follow_console_actions_not_legacy_log_classification(client):
+def test_need_follows_reason_at_send_time_not_action(client):
+    # #60: required = raw send without a reason, optional = business_need at send time.
     required = new_case(client)
     optional = new_case(client, optional=True)
-    # A raw send is still required even if the old log classifier says FP.
-    raw_fp = new_case(client, reason="false_positive")
+    revert_no_reason = new_case(client, action="revert_original")
+    send_business = new_case(client, reason="business_need")
     excluded = [
         event(client, grade="public_O"),
-        event(client, grade="confidential_C"),
+        event(client, grade="public_O", action="revert_original"),
         event(client, action="cancel", detection_confidence="high"),
         event(client, action="send_transformed", reason="business_need"),
+        event(client, grade="confidential_C", action="send_transformed"),
+        event(client, grade="confidential_C", action="cancel"),
+        # False positive at send time is a detection report (/false-positives).
         event(client, action="revert_original", reason="false_positive"),
-        event(client, action="revert_original"),
+        event(client, reason="false_positive"),
     ]
-    assert [c["id"] for c in page(client)["items"]] == [raw_fp, required]
+    req = page(client)["items"]
+    assert [c["id"] for c in req] == [revert_no_reason, required]
+    assert {c["need"] for c in req} == {"required"}
     opt = page(client, "optional")["items"]
-    assert [c["id"] for c in opt] == [optional]
-    assert opt[0]["event"]["reason"] == "business_need"
-    assert opt[0]["need"] == "optional"
+    assert [c["id"] for c in opt] == [send_business, optional]
+    assert [c["event"]["action"] for c in opt] == ["send_as_is", "revert_original"]
+    assert {c["need"] for c in opt} == {"optional"}
+    assert all(c["event"]["reason"] == "business_need" for c in opt)
     assert opt[0]["close"] is None
+    assert detail(client, revert_no_reason)["need"] == "required"
+    assert detail(client, send_business)["need"] == "optional"
     assert page(client, "closed") == {"items": [], "next_cursor": None}
     for ev in excluded:
         case_id = f"INC-{ev['id']}"
         assert client.get(f"/cases/{case_id}").status_code == 404
         assert close(client, case_id).status_code == 404
+
+
+@pytest.mark.parametrize("action", ["send_as_is", "revert_original"])
+@pytest.mark.parametrize("reason", [None, "business_need", "false_positive"])
+def test_confidential_raw_send_is_always_required_case(client, action, reason):
+    # #62: the C original left the company, so it is reviewed whatever the reason.
+    created = event(client, grade="confidential_C", action=action, reason=reason)
+    case_id = f"INC-{created['id']}"
+    assert [c["id"] for c in page(client)["items"]] == [case_id]
+    assert page(client, "optional")["items"] == []
+    assert detail(client, case_id)["need"] == "required"
+    if reason is None:
+        assert created["reason_requested_at"] == created["created_at"]
+    else:
+        assert created["reason_requested_at"] is None
+    bulk = client.post("/cases/close-bulk", json={"ids": [case_id], "conclusion": "legit"})
+    assert bulk.status_code == 409
+    assert bulk.json() == {"detail": "BULK_REQUIRES_OPTIONAL_CASES"}
+
+
+@pytest.mark.parametrize("grade", ["sensitive_S", "confidential_C"])
+@pytest.mark.parametrize("action", ["send_as_is", "revert_original"])
+@pytest.mark.parametrize("reason", ["business_need", "false_positive"])
+def test_reason_after_request_stays_required(client, grade, action, reason):
+    created = event(client, grade=grade, action=action)
+    case_id = f"INC-{created['id']}"
+    assert created["reason_requested_at"] is not None
+    assert detail(client, case_id)["need"] == "required"
+    submitted = client.post(f"/events/{created['id']}/reason",
+                            json={"reason": reason, "text": "늦게 낸 사유"})
+    assert submitted.status_code == 200, submitted.text
+    after = detail(client, case_id)
+    assert after["need"] == "required"
+    assert after["event"]["reason"] == reason
+    assert [c["id"] for c in page(client)["items"]] == [case_id]
+    assert page(client, "optional")["items"] == []
+    bulk = client.post("/cases/close-bulk", json={"ids": [case_id], "conclusion": "legit"})
+    assert bulk.status_code == 409
+    assert bulk.json() == {"detail": "BULK_REQUIRES_OPTIONAL_CASES"}
+
+
+def test_bulk_close_accepts_business_need_sent_as_is_and_rejects_required(client):
+    send_business = new_case(client, reason="business_need")
+    revert_business = new_case(client, optional=True)
+    for required in (new_case(client, action="revert_original"), new_case(client),
+                     new_case(client, grade="confidential_C", reason="business_need")):
+        response = client.post("/cases/close-bulk", json={
+            "ids": [send_business, revert_business, required], "conclusion": "legit"})
+        assert response.status_code == 409
+        assert response.json() == {"detail": "BULK_REQUIRES_OPTIONAL_CASES"}
+        assert detail(client, send_business)["history"] == []
+    response = client.post("/cases/close-bulk", json={
+        "ids": [send_business, revert_business], "conclusion": "legit"})
+    assert response.status_code == 200
+    assert [c["status"] for c in response.json()["items"]] == ["closed", "closed"]
 
 
 @pytest.mark.parametrize("conclusion,cause", [

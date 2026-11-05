@@ -21,7 +21,9 @@ from .kr_rules import kr_structured_detections, password_first
 from .preprocessing import normalize_for_detection, restore_detection_offsets
 from .pseudonym import POLICY_TOKEN
 
-_PHONE = re.compile(r'(?<![0-9])01[016789][ -]?[0-9]{3,4}[ -]?[0-9]{4}(?![0-9])')
+# Mobile (010...) and landline: Seoul 02, the assigned regional codes, internet phone 070.
+_PHONE = re.compile(r'(?<![0-9])(?:01[016789]|02|03[1-3]|04[1-4]|05[1-5]|06[1-4]|070)'
+                    r'[ -]?[0-9]{3,4}[ -]?[0-9]{4}(?![0-9])')
 _EMAIL = re.compile(r'(?i)(?<![\w.+-])[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![a-z0-9-])')
 
 # Business registration checksum confirms structure only, not registration.

@@ -12,6 +12,20 @@ from app.schemas import Action, EventIn, Grade, Stats
 _ACCEPTED_ACTIONS = ("send_as_is", "send_transformed")
 
 
+# Raw sends that let the original text reach the external AI (issues #60, #62).
+# A sensitive (S) or confidential (C) raw send without a reason waits for the
+# employee's explanation; the same set is a security review case (app/case_crud.py).
+RAW_SEND_ACTIONS = (Action.send_as_is.value, Action.revert_original.value)
+REASON_FOLLOWUP_GRADES = (Grade.sensitive.value, Grade.confidential.value)
+
+
+def is_reason_followup_target(grade, action) -> bool:
+    """Whether an unexplained raw send of this grade/action waits for a reason."""
+    grade = getattr(grade, "value", grade)
+    action = getattr(action, "value", action)
+    return grade in REASON_FOLLOWUP_GRADES and action in RAW_SEND_ACTIONS
+
+
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -75,8 +89,7 @@ def insert_event(event: EventIn) -> dict:
         )
         new_id = cur.lastrowid
         needs_reason = (
-            event.grade == Grade.sensitive
-            and event.action == Action.send_as_is
+            is_reason_followup_target(event.grade, event.action)
             and event.reason is None
         )
         conn.execute(
