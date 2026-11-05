@@ -43,6 +43,28 @@ def _ctx(text, start, end, words, before=25, after=12, pattern=None):
     return False
 
 
+def _last_pos(seg, words, pattern=None):
+    pos = -1
+    for w in words:
+        rx = r'(?<![a-z])' + re.escape(w) if w.isascii() else re.escape(w)
+        for m in re.finditer(rx, seg):
+            pos = max(pos, m.start())
+    if pattern is not None:
+        for m in pattern.finditer(seg):
+            pos = max(pos, m.start())
+    return pos
+
+
+def _neg_nearest(text, start, neg, labels, pattern=None, before=25):
+    """True when an order/parcel word is the label closest before the value.
+
+    "주문번호: ABC 카드: 4111…" -> the card label is closer, so it is a card.
+    """
+    seg = re.split(r'[0-9\]]', text[max(0, start - before):start])[-1].lower()
+    neg_pos = _last_pos(seg, neg)
+    return neg_pos >= 0 and neg_pos > _last_pos(seg, labels, pattern)
+
+
 def _digits(s):
     return re.sub(r'[^0-9]', '', s)
 
@@ -105,9 +127,8 @@ def _id_numbers(text):
         if _ctx(text, m.start(), m.end(), _FRN_CTX if back[0] in '5678' else _ID_CTX):
             score += 0.15
         # Order/parcel numbers drop it even with a valid checksum, unless an explicit
-        # ID label ("주민번호") precedes it.
-        if (_ctx(text, m.start(), m.end(), _ID_NEG_CTX, before=15, after=0)
-                and not _ctx(text, m.start(), m.end(), _ID_LABELS, after=0)):
+        # ID label ("주민번호") is closer to the value.
+        if _neg_nearest(text, m.start(), _ID_NEG_CTX, _ID_LABELS):
             continue
         yield _cand('ID_NUMBER', m.start(), m.end(), score)
 
@@ -165,7 +186,7 @@ def _cards(text):
         if ctx:
             score += 0.1
         # From the whole digit run: "주문번호 123 4111 …" must not lose its label to the cut.
-        if _ctx(text, m.start(), en, _NEG_CTX, before=15, after=0):
+        if _neg_nearest(text, m.start(), _NEG_CTX, _CARD_CTX):
             continue  # order / parcel number
         yield _cand('CARD', st, en, score)
 
@@ -186,7 +207,7 @@ def _accounts(text):
                 continue
             if not _ctx(text, m.start(), m.end(), _ACC_CTX, pattern=_AMBIG_BANK):
                 continue
-            if _ctx(text, m.start(), m.end(), _NEG_CTX, before=15, after=0):
+            if _neg_nearest(text, m.start(), _NEG_CTX, _ACC_CTX, _AMBIG_BANK):
                 continue  # order / parcel number
             yield _cand('ACCOUNT', m.start(), m.end(), base + 0.35)
 
@@ -227,7 +248,11 @@ def _ips(text):
 # Key must END with a password word (password_min_length is not a field).
 _PW_WORDS = r'password|passwd|passwort|pwd|pw|passphrase|비밀번호|비번|패스워드|암호'
 _PW_KV_RE = re.compile(
-    r'''(?i)(?<![A-Za-z0-9_])["']?(?P<k>[A-Za-z0-9_.\-]*?(?:''' + _PW_WORDS + r''')s?)["']?\s*(?P<sep>:=|=>|[:=：])\s*'''
+    r'''(?i)(?<![A-Za-z0-9_])["']?(?P<k>[A-Za-z0-9_.\-]*?(?:''' + _PW_WORDS + r''')s?'''
+    # Confirm/repeat fields only (password_confirmation, password2, 비밀번호 확인); metadata
+    # keys such as password_min_length / password_hint do not end like this and stay out.
+    r'''(?:[_.\-]?(?:confirmation|confirmed|confirm|again|repeat|retype|verify|check|\d)|\s?(?:확인|재확인|재입력|다시\s?입력))?)'''
+    r'''["']?\s*(?P<sep>:=|=>|[:=：])\s*'''
     r'''(?:"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)'|(?P<v>[^\s"']+))'''
 )
 _PW_PLACEHOLDER = re.compile(
@@ -255,15 +280,37 @@ def _pw_value_ok(value):
         and not value.startswith(('[', '$', '{{', '<', '%'))  # bare value stops at '}': '{{SECRET'
 
 
+_CLOSE = {')': '(', ']': '[', '}': '{'}
+
+
+def _cut_at_delimiter(value):
+    """Stop at a setting delimiter (; , & |) or an unmatched closing bracket.
+
+    "secret;user=alice" -> "secret", "abc&x=1" -> "abc", "abc)" in func(pw=abc) -> "abc",
+    but "(abc)" keeps its own balanced brackets.
+    """
+    depth = {o: 0 for o in _CLOSE.values()}
+    for i, ch in enumerate(value):
+        if ch in ';,&|':
+            return value[:i]
+        if ch in depth:
+            depth[ch] += 1
+        elif ch in _CLOSE:
+            if depth[_CLOSE[ch]] == 0:
+                return value[:i]
+            depth[_CLOSE[ch]] -= 1
+    return value
+
+
 def _bare_pw(value, assignment=False):
     """Unquoted value up to whitespace, minus trailing punctuation and a glued particle.
 
-    ``assignment`` (pw=…) is config syntax, not prose: the value is kept whole ("abc123)").
+    ``assignment`` (pw=…) is config syntax, not prose: no particle is cut.
     A particle is cut only after a non-Hangul part ("abc123입니다"); "비밀123이" stays whole
     because the last syllable may be part of the password (ambiguous -> mask).
     """
+    value = _cut_at_delimiter(value)
     if not assignment:
-        value = value.rstrip(',;')
         m = _PARTICLE_END.search(value)
         if m and m.start() > 0 and not _HANGUL.search(value[:m.start()]):
             value = value[:m.start()]
@@ -277,8 +324,20 @@ def _quoted(m):
                 (None, None))
 
 
+def _scan(rx, text):
+    """finditer that resumes right after a cut bare value, so the next field after ';' / '&'
+    ("password=a;password2=b") is matched too instead of being swallowed."""
+    pos = 0
+    while (m := rx.search(text, pos)) is not None:
+        yield m
+        if m.group('v') is not None:
+            pos = max(m.start() + 1, m.start('v') + len(_cut_at_delimiter(m.group('v'))))
+        else:
+            pos = m.end()
+
+
 def _passwords(text):
-    for m in _PW_KV_RE.finditer(text):
+    for m in _scan(_PW_KV_RE, text):
         g, val = _quoted(m)
         if g is None:
             g, val = 'v', _bare_pw(m.group('v'), assignment=m.group('sep') != ':' and m.group('sep') != '：')
@@ -287,7 +346,7 @@ def _passwords(text):
     for m in _URL_CRED_RE.finditer(text):
         if _pw_value_ok(m.group('pw')):
             yield _cand('PASSWORD', m.start('pw'), m.end('pw'), 0.95)
-    for m in _KO_PW_RE.finditer(text):
+    for m in _scan(_KO_PW_RE, text):
         g, val = _quoted(m)
         if g is None:
             g, val = 'v', _bare_pw(m.group('v'), assignment=m.group('sep') == '=')

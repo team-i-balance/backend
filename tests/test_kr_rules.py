@@ -171,7 +171,6 @@ class KrRulesTests(unittest.TestCase):
             # Hangul before the particle: kept whole (the last syllable may be in the password).
             ('비밀번호를 한글암호123!로 바꿨어', '비밀번호를 [비밀번호_1] 바꿨어'),
             ('pw: 비밀123이', 'pw: [비밀번호_1]'),
-            ('pw=abc123)', 'pw=[비밀번호_1]'),
         ]
         for text, expected in cases:
             with self.subTest(text=text):
@@ -216,7 +215,55 @@ class KrRulesTests(unittest.TestCase):
         # Review #8: negative context wins even with a valid checksum, unless an ID label precedes.
         self.assertEqual(self.matched(f'주문번호 {dash_id(RRN)}'), [])
         self.assertEqual(self.matched(f'접수 {dash_id(RRN)}'), [])
-        self.assertEqual(self.matched(f'주민번호(주문번호 {dash_id(RRN)})'), [('ID_NUMBER', dash_id(RRN))])
+        # The label closest to the value decides (PR #31 review).
+        self.assertEqual(self.matched(f'주문번호 ABC 주민번호 {dash_id(RRN)}'), [('ID_NUMBER', dash_id(RRN))])
+        self.assertEqual(self.matched(f'주민번호(주문번호 {dash_id(RRN)})'), [])
+
+    def test_nearest_label_beats_order_context(self):
+        # PR #31 review #2: an explicit payment label closer to the value wins.
+        self.assertEqual(self.matched(f'주문번호: ABC 카드: {VISA}'), [('CARD', VISA)])
+        self.assertEqual(self.matched('주문번호 ABC 신한 계좌 110-123-456789'),
+                         [('ACCOUNT', '110-123-456789')])
+        # Order word closest -> still excluded.
+        self.assertEqual(self.matched(f'카드 주문번호 {VISA}'), [])
+        self.assertEqual(self.matched(f'주문번호 {dash_id(RRN)}'), [])
+
+    def test_unquoted_value_stops_at_delimiters(self):
+        # PR #31 review #1: ; , & | and an unmatched ')' end an unquoted value.
+        cases = [
+            ('password=secret;user=alice', 'secret'),
+            ('PASSWORD=hunter2; echo done', 'hunter2'),
+            ('pw=abc,id=x', 'abc'),
+            ('pw=abc|next', 'abc'),
+            ('?pw=abc&x=1', 'abc'),
+            ('func(pw=abc)', 'abc'),
+            ('pw=abc123)', 'abc123'),
+            ('pw=(abc)', '(abc)'),
+            ('pw=a(b)c', 'a(b)c'),
+        ]
+        # The field after the delimiter is still checked (local Codex re-review).
+        text = 'password=secret;password2=secondsecret'
+        self.assertEqual(self.matched(text), [('PASSWORD', 'secret'), ('PASSWORD', 'secondsecret')])
+        self.assertEqual(self.process(text)[0].text, 'password=[비밀번호_1];password2=[비밀번호_2]')
+        self.assertEqual(self.matched('?pw=abc&pwd=xyz9'), [('PASSWORD', 'abc'), ('PASSWORD', 'xyz9')])
+        for text, value in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.matched(text), [('PASSWORD', value)])
+                self.assertEqual(self.process(text)[0].remaining, ())
+
+    def test_password_confirm_fields(self):
+        # PR #31 review #3: confirm/new/old fields are passwords; metadata keys are not.
+        for key in ('password_confirmation', 'password_confirm', 'confirm_password', 'new_password',
+                    'old_password', 'current_password', 'password2', 'passwordConfirm'):
+            with self.subTest(key=key):
+                self.assertEqual(self.matched(f'{key}=Zx9!kq77'), [('PASSWORD', 'Zx9!kq77')])
+        for label in ('비밀번호 확인', '새 비밀번호', '비밀번호 재입력'):
+            with self.subTest(label=label):
+                self.assertEqual(self.matched(f'{label}: Zx9!kq77'), [('PASSWORD', 'Zx9!kq77')])
+        for text in ('password_min_length=8', 'password_policy=strict', 'password_expiry_days=90',
+                     'password_hint=dog', '비밀번호 힌트: 강아지 이름', 'PASSWORD_MIN_LENGTH=8'):
+            with self.subTest(text=text):
+                self.assertEqual(self.matched(text), [])
 
     def test_order_word_elsewhere_does_not_hide_card(self):
         self.assertEqual(self.matched(f'주문 완료, 카드 {VISA}'), [('CARD', VISA)])
