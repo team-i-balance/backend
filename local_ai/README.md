@@ -40,6 +40,26 @@ printf '문의는 user@example.com\n' | python -m local_ai --rules-only
 
 `LocalSession.restore(text)`는 현재 작업에서 발급한 가명만 복원하고 `text`, `unknown`, `blocked`를 반환한다. API 키, 액세스 토큰, 비밀번호는 기본적으로 복원하지 않는다. 모르는 가명은 유지하며, 텍스트의 가명이 다른 작업에서 생성된 것인지 자체적으로 구별할 수 없으므로 호출자가 올바른 세션을 선택해야 한다. `close()` 후에는 복원할 수 없다. 사업자번호 표기에 하이픈 유무가 다르면 별도 원문 값으로 취급한다.
 
+## S등급 텍스트 변환 루프
+
+`SensitiveTransformLoop`는 독립적인 로컬 모듈이며 기존 Backend API에는 연결하지 않았다. S등급으로 판단된 텍스트에 대해서만 호출한다. 선택적으로 기존 탐지 구간을 전달할 수 있으며, 유형과 위치는 `local_ai` 타입과 Python 문자열의 시작 포함·끝 제외 인덱스를 따라야 한다. 미지원 SLM 유형은 검토가 필요하다.
+
+```python
+from local_ai.sensitive_loop import SensitiveTransformLoop
+
+loop = SensitiveTransformLoop(detector, max_iterations=3)
+try:
+    result = loop.process(text, initial_detections=spans)
+    if result.status == 'checked':
+        print(result.text)  # 합성 데모 데이터만 출력
+finally:
+    loop.close()
+```
+
+이름 등의 값은 작업별 가명으로 치환한다. ISO 형식의 `DOB`는 1차로 연도까지 일반화하며, 다시 탐지되면 가명으로 강화한다. `delete_types={'EMAIL'}`처럼 지정한 유형은 삭제할 수 있다. 일반화하거나 삭제한 원문은 가명 매핑에 넣지 않는다. 잔여 구간은 원문 위치로 안전하게 역추적할 수 있을 때만 다음 회차에 추가한다.
+
+결과 상태는 `checked`(완전한 모델+규칙 모드에서 재탐지 없음), `review`(검사 불완전·오류·충돌·반복 한도), `blocked`(기밀 유형)다. `checked`는 재식별 위험이 없다는 보증이나 자동 전송 승인이 아니다. 기존 평가셋에서 `checked`로 끝난 일부 문장에도 정답 원문이 남았으며, 결과 확인이 필요하다. 준식별자 간 조합에 대한 정책 기반 재식별 위험 판정은 아직 구현되지 않았다. 규칙 전용 모드에서는 잔여 탐지가 없어도 `review`를 반환한다. 최종 가명은 같은 루프의 `restore()`로만 복원하며, `close()`가 매핑을 폐기한다.
+
 ## 기밀·비정형 개인정보 SLM (`local_ai/slm`)
 
 회사 기밀 규칙(정책)과 이름·주소·개인 민감정보를 찾는 로컬 SLM(GLiNER 미세조정, [team-i-balance/slm](https://github.com/team-i-balance/slm))을 선택적으로 붙인다.
