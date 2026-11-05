@@ -33,6 +33,26 @@ CREATE TABLE IF NOT EXISTS event_log (
 CREATE INDEX IF NOT EXISTS idx_event_created_at ON event_log (created_at);
 CREATE INDEX IF NOT EXISTS idx_event_queue      ON event_log (queue);
 CREATE INDEX IF NOT EXISTS idx_event_grade      ON event_log (grade);
+
+-- Review history is the source of case state: no history / reopen = open,
+-- latest close = closed. Existing events therefore need no backfill.
+CREATE TABLE IF NOT EXISTS case_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id    INTEGER NOT NULL REFERENCES event_log(id),
+    operation   TEXT NOT NULL CHECK (operation IN ('close', 'reopen')),
+    created_at  TEXT NOT NULL,
+    reviewer    TEXT NOT NULL,
+    conclusion  TEXT CHECK (conclusion IN ('violation', 'legit', 'fp')),
+    cause       TEXT CHECK (cause IN ('fit', 'care', 'intent')),
+    memo        TEXT,
+    rule        TEXT,
+    CHECK (
+        (operation = 'close' AND conclusion IS NOT NULL AND memo IS NOT NULL)
+        OR (operation = 'reopen' AND conclusion IS NULL AND cause IS NULL
+            AND memo IS NULL AND rule IS NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_case_history_event ON case_history (event_id, id);
 """
 
 
