@@ -598,6 +598,10 @@ class PolicyStore:
                 (device_id, version, status, reason, datetime.now(timezone.utc).isoformat()),
             )
 
+    def ack_last_id(self) -> Optional[int]:
+        with self._db.transaction() as conn:
+            return conn.execute("SELECT MAX(id) AS last_id FROM policy_ack").fetchone()["last_id"]
+
     def has_acks(self, version: int) -> bool:
         with self._db.transaction() as conn:
             row = conn.execute("SELECT 1 FROM policy_ack WHERE version = ? LIMIT 1", (version,)).fetchone()

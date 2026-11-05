@@ -149,6 +149,20 @@ def init_db() -> None:
         # Older databases lack user_id until the migrations above finish.
         # Keep the new index in the same transaction; don't hide DDL failures.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_event_user_id ON event_log (user_id)")
+        if "change_seq" not in columns:
+            # Bumped on every update of an existing row (reason submitted / re-requested ...),
+            # so GET /logs/changes sees edits without trusting timestamps (console polling).
+            conn.execute("ALTER TABLE event_log ADD COLUMN change_seq INTEGER NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_event_change_seq ON event_log (change_seq)")
+        # The WHEN clause skips the trigger's own update; recursive triggers are off by default.
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_event_change_seq AFTER UPDATE ON event_log
+            WHEN NEW.change_seq IS OLD.change_seq
+            BEGIN
+                UPDATE event_log SET change_seq = (SELECT MAX(change_seq) FROM event_log) + 1
+                WHERE id = NEW.id;
+            END
+        """)
         # Older rows have no independent request/submission timestamps. Use
         # event creation time for their initial waiting state / initial reason.
         conn.execute("""

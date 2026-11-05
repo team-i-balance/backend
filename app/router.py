@@ -4,11 +4,12 @@ Mounted under /logs in main.py.
 """
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 
-from app import crud
+from app import changes, crud
 from app.auth import require_api, require_security
 from app.crypto import encrypt_records, public_key_fingerprint
+from app.etag import if_none_match_hits, quote_etag
 from app.log_time import parse_utc
 from app.schemas import EventIn, EventOut, ExportResult, Stats
 
@@ -86,6 +87,22 @@ def get_stats(
 ):
     _validate_period(start, end)
     return crud.get_stats(start=start, end=end, include_test=include_test)
+
+
+@router.get("/changes", dependencies=[Depends(require_security)])
+def get_changes(response: Response, if_none_match: Optional[str] = Header(default=None)):
+    """Revision markers for console polling: no event contents.
+
+    Send the previous ETag as If-None-Match; an unchanged state returns 304.
+    Includes test events, so toggling include_test needs no new marker.
+    """
+    out = changes.summary()
+    etag = quote_etag("changes:" + out["rev"])
+    headers = {"ETag": etag, "Cache-Control": "no-store"}
+    if if_none_match_hits(if_none_match, etag):
+        return Response(status_code=304, headers=headers)
+    response.headers.update(headers)
+    return out
 
 
 @router.post(
