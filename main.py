@@ -5,7 +5,7 @@ import os
 
 from fastapi import Depends
 
-from app.auth import require_api
+from app.auth import require_api, require_security
 from app.auth_router import router as auth_router
 from app.db import init_db
 from app.router import router as logs_router
@@ -64,7 +64,7 @@ app.include_router(reason_router, dependencies=[Depends(require_api)])
 app.include_router(process_router, dependencies=[Depends(require_api)])
 app.include_router(file_router, dependencies=[Depends(require_api)])
 app.include_router(policy_router)
-app.include_router(case_router)
+app.include_router(case_router, dependencies=[Depends(require_security)])
 app.include_router(fp_router)  # require_security inside (#48)
 app.include_router(reason_request_router)  # require_security inside (#48)
 
