@@ -46,3 +46,30 @@ def submit_reason(event_id: int, body: EventReasonIn) -> dict:
         )
         saved = conn.execute("SELECT * FROM event_log WHERE id = ?", (event_id,)).fetchone()
         return _row_to_dict(saved)
+
+
+def reason_status(event_id: int) -> dict:
+    """Employee-readable reason state, so the app can see a security re-request (#48).
+
+    Returns only the reason workflow fields, not the event's detection metadata.
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT id, grade, action, reason, reason_requested_at, reason_at
+               FROM event_log WHERE id = ?""",
+            (event_id,),
+        ).fetchone()
+    if row is None:
+        raise ReasonError(404, "EVENT_NOT_FOUND")
+    return {
+        "event_id": row["id"],
+        "reason_needed": (
+            row["grade"] == Grade.sensitive.value
+            and row["action"] == Action.send_as_is.value
+            and row["reason_requested_at"] is not None
+            and row["reason_at"] is None
+        ),
+        "reason_requested_at": row["reason_requested_at"],
+        "reason": row["reason"],
+        "reason_at": row["reason_at"],
+    }

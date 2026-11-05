@@ -49,6 +49,26 @@ Content-Type: application/json
 `/logs/stats`도 갱신된 사유·큐를 집계합니다. 전송 행동·등급·해시·탐지 결과·생성 시각은 유지합니다.
 직원의 사유는 보안팀 판단이 아니므로 **검토 건을 자동으로 종결하거나 다시 열지 않습니다.**
 
+## 사유 상태 조회 (직원 앱)
+
+`GET /events/{event_id}/reason`은 api 토큰으로 사유 진행 상태만 돌려줍니다(탐지 내용·직원 정보는 없음).
+보안팀이 `POST /events/{id}/reason-request`([false-positive-api.md](false-positive-api.md))로
+사유를 다시 요청하면 `reason_requested_at`이 바뀝니다. 직원 앱은 실행할 때 사유를 내지 않은 이벤트를
+조회해서 `reason_needed=true`이고 `reason_requested_at`이 마지막으로 본 값보다 새로우면 다시 묻습니다.
+
+```json
+{
+  "event_id": 42,
+  "reason_needed": true,
+  "reason_requested_at": "2026-11-05T06:00:00+00:00",
+  "reason": null,
+  "reason_at": null
+}
+```
+
+`reason_needed`는 민감 원문 전송이면서 사유 대기 중이고 아직 제출하지 않았을 때만 `true`입니다.
+없는 이벤트는 `404 EVENT_NOT_FOUND`이고, 응답에는 `Cache-Control: no-store`가 붙습니다.
+
 ## 재시도와 오류
 
 | 상태 | 의미 |
