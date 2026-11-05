@@ -76,6 +76,15 @@ class SensitiveLoopTests(unittest.TestCase):
         self.assertEqual((result.status, result.text), ('checked', '메일: '))
         self.assertEqual(loop.restore('[이메일_1]').text, '[이메일_1]')
 
+    def test_deletion_cannot_create_a_literal_matching_an_issued_alias(self):
+        text = '[이름_user@example.com1] 김민수'
+        spans = [span(text, 'user@example.com', 'EMAIL'), span(text, '김민수', 'NAME')]
+        loop = SensitiveTransformLoop(SequenceDetector([lambda t: [], lambda t: []]), delete_types={'EMAIL'})
+        result = loop.process(text, spans)
+        self.assertEqual((result.status, result.text, result.reason), ('review', None, 'alias_collision'))
+        with self.assertRaises(RuntimeError):
+            loop.restore('[이름_1]')
+
     def test_generalization_does_not_create_reversible_alias(self):
         detector = SequenceDetector([lambda t: [span(t, '1990-01-02', 'DOB')], lambda t: []])
         loop = SensitiveTransformLoop(detector)

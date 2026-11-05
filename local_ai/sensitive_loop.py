@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 import re
 
-from .pseudonym import PseudonymSession, PseudonymError, _spans
+from .pseudonym import PseudonymSession, PseudonymError, _PLACEHOLDER, _spans
 
 _SECRET = frozenset({'PASSWORD', 'API_KEY', 'ACCESS_TOKEN', 'CONFIDENTIAL'})
 
@@ -89,6 +89,11 @@ class SensitiveTransformLoop:
                 parts.append(text[cursor:])
                 provenance.extend(('raw', i, i + 1) for i in range(cursor, len(text)))
                 candidate = ''.join(parts)
+                issued = set(attempt._mapping.values())
+                if any(m.group() in issued and (m.start(), m.end()) not in protected
+                       for m in _PLACEHOLDER.finditer(candidate)):
+                    attempt.close()
+                    return LoopResult('review', None, iterations, 'alias_collision')
                 residual = self.detector.detect(candidate)
                 if any(d.get('type') in _SECRET or d.get('grade') in ('C', 'confidential_C') for d in residual):
                     attempt.close()
