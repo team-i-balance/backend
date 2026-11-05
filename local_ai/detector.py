@@ -19,7 +19,7 @@ _EMAIL = re.compile(r'(?i)(?<![\w.+-])[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z
 _BUSINESS_HYPHEN = re.compile(r'(?<![0-9])([0-9]{3}-[0-9]{2}-[0-9]{5})(?![0-9])')
 _BUSINESS_PLAIN = re.compile(r'(?<![0-9])([0-9]{10})(?![0-9])')
 _BUSINESS_CONTEXT = re.compile(r'(?:사업자\s*(?:등록)?\s*번호|사업자\s*등록번호|business\s*(?:registration)?\s*(?:number|no))', re.I)
-_BUSINESS_FIELD = re.compile(_BUSINESS_CONTEXT.pattern + r'\s*[:=：]?\s*$', re.I)
+_BUSINESS_FIELD = re.compile(_BUSINESS_CONTEXT.pattern + r'''["']?\s*[:=：]?\s*["']?\s*$''', re.I)
 # Match the value only; delimiters and key names must not be replaced.
 _CREDENTIAL = re.compile(
     r"(?i)(?<![\w])(?:[\"']?(?P<field>api[_-]?key|access[_-]?token)[\"']?)\s*[:=]\s*"
@@ -65,10 +65,10 @@ def _structured_detections(text: str) -> list[dict]:
         value = match.group('value')
         if not _PLACEHOLDER.fullmatch(value):
             found.append({'start': match.start('value'), 'end': match.end('value'), 'type': 'ACCESS_TOKEN'})
+    found.extend(detect_additional(text, found))
     for match in _PROVIDER_API_KEY.finditer(text):
-        if not any(x['type'] in ('API_KEY', 'ACCESS_TOKEN') and x['start'] <= match.start() and x['end'] >= match.end() for x in found):
+        if not any(x['type'] in ('API_KEY', 'ACCESS_TOKEN', 'PASSWORD') and x['start'] <= match.start() and x['end'] >= match.end() for x in found):
             found.append({'start': match.start(), 'end': match.end(), 'type': 'API_KEY'})
-    found.extend(detect_additional(text))
     return found
 
 

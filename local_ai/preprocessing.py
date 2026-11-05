@@ -10,23 +10,31 @@ def _numeric(char):
 
 def normalize_for_detection(text):
     result, offsets = [], []
-    for index, char in enumerate(text):
+    index = 0
+    while index < len(text):
+        char = text[index]
         if char in _ZERO_WIDTH:
-            left, right = index - 1, index + 1
-            while left >= 0 and text[left] in _ZERO_WIDTH:
-                left -= 1
+            start = index
+            right = index + 1
             while right < len(text) and text[right] in _ZERO_WIDTH:
                 right += 1
-            if left >= 0 and right < len(text):
-                a, b = text[left], text[right]
+            if start > 0 and right < len(text):
+                a, b = text[start - 1], text[right]
                 if (_numeric(a) and (_numeric(b) or b in _HYPHENS or b == '-')) or (_numeric(b) and (a in _HYPHENS or a == '-')):
+                    index = right
                     continue
+            for pos in range(start, right):
+                result.append(text[pos])
+                offsets.append(pos)
+            index = right
+            continue
         if '０' <= char <= '９':
             char = chr(ord('0') + ord(char) - ord('０'))
         elif char in _HYPHENS and index and index + 1 < len(text) and _numeric(text[index - 1]) and _numeric(text[index + 1]):
             char = '-'
         result.append(char)
         offsets.append(index)
+        index += 1
     return ''.join(result), offsets
 
 

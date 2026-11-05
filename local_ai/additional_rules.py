@@ -14,7 +14,7 @@ _CARD = re.compile(r'(?i)(?:카드\s*번호|card\s*(?:number|no))\s*[:=：]?\s*(
 _ACCOUNT = re.compile(r'(?i)(?:계좌\s*번호|account\s*(?:number|no))\s*[:=：]?\s*(?P<value>[0-9](?:[0-9* -]{5,25}[0-9*]))(?![0-9])')
 
 
-def detect_additional(text):
+def detect_additional(text, existing=()):
     result = []
     for pattern, kind in ((_ID, 'ID_NUMBER'), (_CARD, 'CARD'), (_ACCOUNT, 'ACCOUNT')):
         for match in pattern.finditer(text):
@@ -42,5 +42,8 @@ def detect_additional(text):
             kind = 'PASSWORD' if any(x in field for x in ('password', 'passwd', 'pwd', 'client_secret')) else ('ACCESS_TOKEN' if 'token' in field else 'API_KEY')
             result.append({'start': match.start(1), 'end': match.end(1), 'type': kind})
     for match in _PROVIDER.finditer(text):
-        result.append({'start': match.start(), 'end': match.end(), 'type': 'API_KEY'})
+        if not any(x['type'] in ('API_KEY', 'ACCESS_TOKEN', 'PASSWORD')
+                   and x['start'] <= match.start() and x['end'] >= match.end()
+                   for x in (*existing, *result)):
+            result.append({'start': match.start(), 'end': match.end(), 'type': 'API_KEY'})
     return result
