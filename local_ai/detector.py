@@ -202,11 +202,13 @@ class Detector:
         rules = [s for s in found if s['type'] in _RULE_TYPES]
         others = [s for s in found if s['type'] not in _RULE_TYPES]
         secrets = [r for r in rules if r['type'] in _SECRET_RULE_TYPES]
+        # Pseudonym placeholders ([주소_1]) are not data; the SLM tends to re-flag them on re-inspection.
+        placeholders = [{'start': m.start(), 'end': m.end()} for m in _PLACEHOLDER.finditer(text)]
         slm, absorbed = [], set()
         for span in self._slm.detect(text):
-            blockers = secrets
+            blockers = secrets + placeholders
             if span['type'] not in _GRADE_C_SLM_TYPES:
-                blockers = rules
+                blockers = rules + placeholders
             else:
                 for i, r in enumerate(rules):
                     if r['type'] not in _SECRET_RULE_TYPES and r['start'] < span['end'] and span['start'] < r['end']:
