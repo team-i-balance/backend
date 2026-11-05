@@ -33,7 +33,12 @@ def classify_file_types(detected_types, overrides=None):
     # through as public. The shared policy determines the confidential types.
     if grade == Grade.confidential:
         return "C"
-    return "S" if detected_types else "O"
+    if grade == Grade.sensitive:
+        return "S"
+    # Types the policy explicitly re-graded are decided above; only the rest
+    # fall back to sensitive.
+    overridden = {t for t, g in (overrides or {}).items() if g in _GRADES}
+    return "S" if set(detected_types) - overridden else "O"
 
 
 def detection_fields(findings: Findings, *, blocked: bool) -> dict:
