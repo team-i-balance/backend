@@ -308,6 +308,10 @@ def test_full_mode_with_model_dir_builds_detector(client, monkeypatch, tmp_path)
     assert body["detection_confidence"] == "high"  # model_and_rules -> high
     assert body["grade"] == "sensitive_S"
 
+    # Issue #20: a certain detection sent as-is is the console's required review.
+    d = client.post("/process/decide", json={"work_id": body["work_id"], "action": "send_as_is"}).json()
+    assert d["event"]["queue"] == "real_violation"
+
 
 def test_detector_is_reused_across_requests(client):
     # Regression (P1-A): the detector must be built once per mode and reused,

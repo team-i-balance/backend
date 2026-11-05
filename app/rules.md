@@ -43,19 +43,21 @@
 2. `reason == business_need`
    → **violation_candidate** (위반 후보 큐)
 
-3. `action == cancel` **그리고** `detection_confidence == high`
-   → **real_violation** (실제 위반 큐)
-   - "무시 + 확실한 탐지"에 해당. 사용자가 취소(=전송 포기)했고 탐지가 확실한 경우.
+3. `grade != public_O` **그리고** `action in {send_as_is, revert_original}` **그리고** `detection_confidence == high`
+   → **real_violation** (실제 위반 큐, 보안팀 콘솔의 "필수 검토")
+   - 민감·기밀 정보가 확실히 잡혔는데 원문을 그대로 보냈거나, 사유 없이 되돌려 원문을 보낸 경우.
+   - 사유가 있는 되돌림(`false_positive`, `business_need`)은 규칙 1·2가 먼저 가져간다.
+   - 취소(`cancel`)는 아무것도 전송되지 않았으므로 위반이 아니다 (이슈 #20).
 
 4. `action in {send_transformed, cancel}`
    → **pre_warning** (사전 경고 로그, 유형·건수만)
-   - 위 1~3에 걸리지 않은 변환 전송/취소 건.
+   - 위 1~3에 걸리지 않은 변환 전송/취소 건 (확실한 탐지 + 취소 포함).
 
-5. 그 외 (예: `send_as_is`, `revert_original`)
+5. 그 외 (예: 공개 등급의 원문 전송, 확실하지 않은 탐지의 원문 전송)
    → **pre_warning** 로 기본 수렴 (유형·건수만 남김)
 
-> 비고: 규칙 3은 규칙 4보다 먼저 평가되므로, "확실한 탐지 + 취소"는
-> real_violation 으로, 그렇지 않은 취소는 pre_warning 으로 간다.
+> 비고: 규칙 3은 규칙 4·5보다 먼저 평가되므로, "민감·기밀 + 확실한 탐지 + 원문 전송"은
+> real_violation 으로, 그 밖의 원문 전송·취소는 pre_warning 으로 간다.
 
 ## 5. 집계 지표 (조회 시 계산)
 
@@ -77,8 +79,8 @@
 
 | 조건 | 등급 |
 | --- | --- |
-| 비밀정보 유형이 하나라도 있음 (`API_KEY`, `ACCESS_TOKEN`, `PASSWORD`) | **기밀 C** (`confidential_C`) |
-| 위가 없고 개인정보 유형이 있음 (`NAME`, `PHONE`, `EMAIL`, `ADDRESS`, `ID`/`ID_NUMBER`, `ACCOUNT`, `CARD`, `DOB`, `USERNAME`, `IP_ADDRESS`, `BUSINESS_NUMBER`) | **민감 S** (`sensitive_S`) |
+| 비밀정보 유형이 하나라도 있음 (`API_KEY`, `ACCESS_TOKEN`, `PASSWORD`), 또는 SLM의 `CONFIDENTIAL`(정책 C 규칙)·`SENSITIVE`(개인 민감정보) | **기밀 C** (`confidential_C`) |
+| 위가 없고 개인정보 유형이 있음 (`NAME`, `PHONE`, `EMAIL`, `ADDRESS`, `ID`/`ID_NUMBER`, `ACCOUNT`, `CARD`, `DOB`, `USERNAME`, `IP_ADDRESS`, `BUSINESS_NUMBER`), 또는 SLM의 `INTERNAL`(정책 S 규칙) | **민감 S** (`sensitive_S`) |
 | 아무것도 탐지되지 않음 | **공개 O** (`public_O`) |
 
 비밀정보가 있으면 전체를 기밀로 본다(가장 높은 민감도 우선).
