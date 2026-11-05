@@ -52,3 +52,15 @@ def test_warm_up_failure_is_swallowed_and_requests_proceed(monkeypatch):
     detectors.warm_up_in_background().join(5)
     assert detectors._warm_done.is_set()
     assert False not in detectors._detectors
+
+
+def test_detection_status(monkeypatch):
+    detectors.reset_detectors()
+    monkeypatch.delenv("LOCAL_PII_MODEL_DIR", raising=False)
+    monkeypatch.delenv("LOCAL_SLM_MODEL_DIR", raising=False)
+    assert detectors.detection_status() == {"detection": "rules_only", "slm": False, "slm_ready": False}
+    monkeypatch.setenv("LOCAL_SLM_MODEL_DIR", "/models/slm")
+    assert detectors.detection_status() == {"detection": "model", "slm": True, "slm_ready": False}
+    detectors._detectors[False] = object()
+    assert detectors.detection_status()["slm_ready"] is True
+    detectors.reset_detectors()

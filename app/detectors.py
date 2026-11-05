@@ -45,6 +45,22 @@ def get_detector(rules_only: bool = False):
         return _detectors[rules_only]
 
 
+def detection_status() -> dict:
+    """What full detection covers on this server, without loading anything.
+
+    "model": a local model (AEGIS and/or SLM) is configured, so names and addresses are checked.
+    "rules_only": only regex/checksum rules (phone, email, business number, keys) run.
+    slm_ready is true once the SLM warm-up finished and the detector is cached.
+    """
+    slm = bool(os.getenv(SLM_DIR_ENV))
+    model = slm or bool(os.getenv(MODEL_DIR_ENV))
+    return {
+        "detection": "model" if model else "rules_only",
+        "slm": slm,
+        "slm_ready": slm and _warm_done.is_set() and False in _detectors,
+    }
+
+
 def warm_up_in_background() -> threading.Thread | None:
     """Load the full detector (and run one fixed sentence) at startup when a model is configured.
 
