@@ -59,3 +59,29 @@ finally:
 이름 등의 값은 작업별 가명으로 치환한다. ISO 형식의 `DOB`는 1차로 연도까지 일반화하며, 다시 탐지되면 가명으로 강화한다. `delete_types={'EMAIL'}`처럼 지정한 유형은 삭제할 수 있다. 일반화하거나 삭제한 원문은 가명 매핑에 넣지 않는다. 잔여 구간은 원문 위치로 안전하게 역추적할 수 있을 때만 다음 회차에 추가한다.
 
 결과 상태는 `checked`(완전한 모델+규칙 모드에서 재탐지 없음), `review`(검사 불완전·오류·충돌·반복 한도), `blocked`(기밀 유형)다. `checked`는 재식별 위험이 없다는 보증이나 자동 전송 승인이 아니다. 기존 평가셋에서 `checked`로 끝난 일부 문장에도 정답 원문이 남았으며, 결과 확인이 필요하다. 준식별자 간 조합에 대한 정책 기반 재식별 위험 판정은 아직 구현되지 않았다. 규칙 전용 모드에서는 잔여 탐지가 없어도 `review`를 반환한다. 최종 가명은 같은 루프의 `restore()`로만 복원하며, `close()`가 매핑을 폐기한다.
+
+## 기밀·비정형 개인정보 SLM (`local_ai/slm`)
+
+회사 기밀 규칙(정책)과 이름·주소·개인 민감정보를 찾는 로컬 SLM(GLiNER 미세조정, [team-i-balance/slm](https://github.com/team-i-balance/slm))을 선택적으로 붙인다.
+모델 폴더는 저장소에 없고, 실행 중 다운로드하지 않는다.
+
+```bash
+python -m pip install -r local_ai/requirements-slm.txt
+export LOCAL_SLM_MODEL_DIR=/path/to/slm-v2-trim        # gliner_config.json 이 있는 폴더
+export LOCAL_SLM_POLICY=/path/to/policy.json           # 없으면 local_ai/slm/policy.example.json (가상 회사 예시)
+```
+
+`Detector(model_dir, slm_dir=..., slm_policy=...)` 처럼 AEGIS 모델과 함께 또는 단독으로 쓴다. `/process` 는 `LOCAL_PII_MODEL_DIR` 와 `LOCAL_SLM_MODEL_DIR` 중 하나만 있어도 전체 탐지 모드를 연다.
+
+| 탐지 유형 | 출처 | 등급 (`app/grading.py`) |
+|---|---|---|
+| `NAME`, `ADDRESS` | 고정 라벨 | S |
+| `SENSITIVE` | 고정 라벨: 특정인의 건강·징계·종교·범죄 경력 등 | C |
+| `CONFIDENTIAL` | 정책 규칙 중 `grade: "C"` | C |
+| `INTERNAL` | 정책 규칙 중 `grade: "S"` | S |
+
+- 모델은 "어느 구간이 어느 규칙에 해당하는지"만 찾고, 등급은 보안팀 정책의 규칙 grade 로 정해진다. 새 규칙은 정책 파일만 바꾸면 재학습 없이 적용된다 (규칙 `label` 은 15자 이내 명사구)
+- 겹치는 구간은 더 강한 유형(PASSWORD > API_KEY > ACCESS_TOKEN > CONFIDENTIAL > SENSITIVE > INTERNAL > ADDRESS > NAME > 기타)으로 합친다
+- API 키·토큰 구간은 언제나 그대로 두고 SLM 구간을 그 주변으로 자른다. 전화·이메일·사업자번호도 그대로 두되, C 등급 SLM 구간(CONFIDENTIAL·SENSITIVE)이 덮으면 그 안에 흡수해 정책 등급을 유지한다
+- 성능(합성 평가셋 719문장, 기준값 기밀 0.45 / 개인정보 0.35): 기밀 재현율 90.2%, 이름·주소 100%, 민감정보 89%, 오탐 문장률 8.1%, 등급 정확도 90%, 문장당 약 80ms(M5 CPU). 합성 데이터라 실제 입력에서는 더 낮을 수 있다
+- 실제 모델 테스트: `LOCAL_SLM_MODEL_DIR=... python -m pytest tests/test_slm_adapter.py`

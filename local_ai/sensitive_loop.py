@@ -9,7 +9,7 @@ import re
 
 from .pseudonym import PseudonymSession, PseudonymError, _PLACEHOLDER, _spans
 
-_SECRET = frozenset({'PASSWORD', 'API_KEY', 'ACCESS_TOKEN', 'CONFIDENTIAL'})
+_SECRET = frozenset({'PASSWORD', 'API_KEY', 'ACCESS_TOKEN', 'CONFIDENTIAL', 'SENSITIVE'})
 
 
 @dataclass(frozen=True)

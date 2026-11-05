@@ -49,6 +49,11 @@ class SensitiveLoopTests(unittest.TestCase):
         result = SensitiveTransformLoop(detector).process('password=abc123')
         self.assertEqual((result.status, result.text), ('blocked', None))
 
+    def test_slm_sensitive_type_is_confidential(self):
+        detector = SequenceDetector([lambda t: [span(t, '가상민감정보', 'SENSITIVE')]])
+        result = SensitiveTransformLoop(detector).process('가상민감정보')
+        self.assertEqual((result.status, result.text, result.reason), ('blocked', None, 'confidential_input'))
+
     def test_limit_requires_review(self):
         detector = SequenceDetector([
             lambda t: [],

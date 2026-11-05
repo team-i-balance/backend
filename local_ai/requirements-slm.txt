@@ -1,0 +1,4 @@
+# local_ai/slm (기밀·비정형 개인정보 SLM). requirements-model.txt 와 별도로 설치한다.
+torch>=2.4
+gliner>=0.2.30
+python-mecab-ko>=1.3
