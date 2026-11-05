@@ -21,6 +21,8 @@ def _row_to_dict(row) -> dict:
     d["detected_types"] = json.loads(d.get("detected_types") or "[]")
     d["reverted"] = bool(d["reverted"])
     d["restored"] = bool(d["restored"])
+    d["items"] = json.loads(d.get("items") or "[]")
+    d["test"] = bool(d.pop("is_test", 0))
     return d
 
 
@@ -28,14 +30,20 @@ def insert_event(event: EventIn) -> dict:
     queue = classify(event)
     created_at = _now_utc_iso()
 
+    items_json = json.dumps(
+        [item.model_dump(exclude_none=True) for item in event.items],
+        ensure_ascii=False,
+    )
+
     with get_conn() as conn:
         cur = conn.execute(
             """
             INSERT INTO event_log (
                 created_at, request_id, grade, action, reason,
                 detection_confidence, detected_types, detected_count,
-                reverted, restored, content_hash, queue
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                reverted, restored, content_hash, queue,
+                user_id, dept, target_ai, device_id, reason_text, items, is_test, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -52,6 +60,14 @@ def insert_event(event: EventIn) -> dict:
                 int(event.restored),
                 event.content_hash,
                 queue.value,
+                event.user_id,
+                event.dept,
+                event.target_ai,
+                event.device_id,
+                event.reason_text,
+                items_json,
+                int(event.test),
+                event.source.value,
             ),
         )
         new_id = cur.lastrowid
@@ -72,10 +88,12 @@ def insert_event(event: EventIn) -> dict:
     return _row_to_dict(row)
 
 
-def _event_filter(*, grade=None, queue=None, start=None, end=None, cursor=None):
+def _event_filter(*, grade=None, queue=None, start=None, end=None, cursor=None, include_test=False):
     """One set of date/filter semantics for lists and aggregate queries."""
     clauses = []
     params: list = []
+    if not include_test:
+        clauses.append("is_test = 0")
     if grade:
         clauses.append("grade = ?")
         params.append(grade)
@@ -103,8 +121,11 @@ def list_events(
     end: Optional[str] = None,
     limit: int = 100,
     cursor: Optional[int] = None,
+    include_test: bool = False,
 ) -> list[dict]:
-    where, params = _event_filter(grade=grade, queue=queue, start=start, end=end, cursor=cursor)
+    where, params = _event_filter(
+        grade=grade, queue=queue, start=start, end=end, cursor=cursor, include_test=include_test,
+    )
     sql = f"SELECT * FROM event_log {where} ORDER BY id DESC LIMIT ?"
     params.append(limit)
 
@@ -113,8 +134,10 @@ def list_events(
     return [_row_to_dict(r) for r in rows]
 
 
-def get_stats(*, start: Optional[str] = None, end: Optional[str] = None) -> Stats:
-    where, params = _event_filter(start=start, end=end)
+def get_stats(
+    *, start: Optional[str] = None, end: Optional[str] = None, include_test: bool = False,
+) -> Stats:
+    where, params = _event_filter(start=start, end=end, include_test=include_test)
     # One aggregate query sees one database snapshot and is not bounded by the
     # event-list page size. With the current enums it returns at most 48 groups.
     with get_conn() as conn:

@@ -91,7 +91,9 @@ GET /cases/INC-42
   `event.reason_text` 본문, `event.reason_requested_at` 대기 시작 시각,
   `event.reason_at` 제출 시각으로 읽습니다. 제출 방법은 [직원 사유 API](event-reason-api.md)를 참고하세요.
   사유가 늦게 도착해도 기존 보안팀 결론과 처리 이력은 바뀌지 않습니다.
-  원문·직원 이름·부서는 아직 이벤트에 없으며 만들어내지 않습니다.
+  선택 컨텍스트 `user_id`, `dept`, `target_ai`, `device_id`와 항목별 `items`도 함께 반환합니다.
+  예전 이벤트의 컨텍스트는 `null`, `items`는 빈 배열입니다. `user_id` 등은 클라이언트가
+  전달한 메타데이터이며 인증된 처리자 정보가 아닙니다. 직원 이름·원문을 만들어내지 않습니다.
 - `status`는 `open` 또는 `closed`, 열린 건의 `close`는 `null`입니다.
 - `history`는 시간 순(이력 ID 오름차순)의 전체 종결·다시 열기 기록입니다.
   다시 열기 기록은 `conclusion`/`cause`/`memo`/`rule`이 모두 `null`입니다.
@@ -115,7 +117,9 @@ Content-Type: application/json
 | `rule` | 재발 방지 규칙 설명, 앞뒤 공백 제거 후 1~2,000자 / 생략 또는 `null` |
 
 `rule`은 판단 당시 설명을 저장하는 필드입니다. 정책 초안 등록·서명·배포를 수행하지 않습니다.
-정책 반영은 기존 정책 API로 별도 처리합니다.
+정책 반영은 [정책 초안 API](policy-draft-api.md)로 별도 처리합니다. 콘솔은 구조화된 규칙을
+`payload.rules`에, 변경 설명과 `src: INC-…`를 `changes`에 넣어 `PUT /policy/draft`로 저장하세요.
+종결과 초안 저장은 별도 요청이므로 각각의 성공 응답을 확인해야 합니다.
 
 ```http
 POST /cases/INC-42/reopen

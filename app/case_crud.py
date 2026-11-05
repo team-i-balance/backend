@@ -13,7 +13,7 @@ from app.db import get_conn
 # Match the console's casesFrom() in web/src/api/client.ts, rather than the
 # separate legacy log queues (which also include cancelled / safe sends).
 _ELIGIBLE = """
-    e.grade = 'sensitive_S' AND (
+    e.is_test = 0 AND e.grade = 'sensitive_S' AND (
         e.action = 'send_as_is'
         OR (e.action = 'revert_original' AND e.reason = 'business_need')
     )
@@ -42,8 +42,11 @@ class CaseError(Exception):
 def _case(row) -> dict:
     event = {k: row[k] for k in row.keys() if not k.startswith("review_")}
     event["detected_types"] = json.loads(event["detected_types"])
+    event["items"] = json.loads(event.get("items") or "[]")
     event["reverted"] = bool(event["reverted"])
     event["restored"] = bool(event["restored"])
+    # Same field name as /logs/events (EventOut.test); test events never become cases.
+    event["test"] = bool(event.pop("is_test", 0))
     closed = row["review_operation"] == "close"
     return {
         "id": f"INC-{event['id']}",

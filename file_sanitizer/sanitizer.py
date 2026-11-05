@@ -12,6 +12,26 @@ from .number_format import display_policy, format_labels, numeric_value
 from .package import MAX_GRID, RejectedFile, inspect_package
 
 Grade = Literal["O", "S", "C"]
+# A zero-padded number cell is checked twice: its displayed text and, under this
+# suffix, its stored value. Both segments describe the same cell.
+RAW_SUFFIX = ":raw"
+# A number format is checked as written and, under this infix, as the literal
+# text each of its sections displays.
+LABEL_INFIX = ":label:"
+
+
+def segment_place(segment_id: str) -> str:
+    """The part of the file a segment was read from.
+
+    A cell's stored value and a number format's literal labels are second
+    readings of that cell or format, so they share its place.
+    """
+    if segment_id.endswith(RAW_SUFFIX):
+        return segment_id[:-len(RAW_SUFFIX)]
+    head, infix, index = segment_id.rpartition(LABEL_INFIX)
+    if infix and index.isdigit():
+        return head
+    return segment_id
 
 
 @dataclass(frozen=True)
@@ -83,7 +103,7 @@ def read_xlsx(data, filename=None):
     scan = Inspection([Segment(key, text) for key, text in properties.items()], [])
     for key, text in properties.items():
         if key.startswith("number-format:"):
-            scan.segments.extend(Segment(f"{key}:label:{i}", label)
+            scan.segments.extend(Segment(f"{key}{LABEL_INFIX}{i}", label)
                                  for i, label in enumerate(format_labels(text)))
     # Preflight rejects formulas except literal booleans whose cached value was validated.
     book = load_workbook(BytesIO(data), data_only=True, keep_links=False)
@@ -146,7 +166,7 @@ def read_xlsx(data, filename=None):
                         text = ("-" if integer < 0 else "") + str(abs(integer)).zfill(len(safe_format))
                         scan.output_formats[key] = safe_format
                         if text != str(cell.value):
-                            scan.segments.append(Segment(key + ":raw", str(cell.value), header_text))
+                            scan.segments.append(Segment(key + RAW_SUFFIX, str(cell.value), header_text))
                     scan.display_texts[key] = text
                     scan.segments.append(Segment(key, text, header_text, export))
                     if export:
@@ -232,7 +252,7 @@ def sanitize_xlsx(
     if source.unsupported_format:
         return Result("FAILED", processing_id, "UNSUPPORTED_FEATURE")
     for key in source.output_formats:
-        raw = decisions.get(key + ":raw")
+        raw = decisions.get(key + RAW_SUFFIX)
         if raw is not None and raw.grade == "S" and decisions[key].text == source.display_texts[key]:
             return Result("FAILED", processing_id, "RESIDUAL_CHECK_FAILED")
 

@@ -221,7 +221,6 @@ def test_existing_reason_text_column_and_content_survive_upgrade(client, tmp_pat
     path = tmp_path / "context.db"
     with sqlite3.connect(path) as conn:
         conn.executescript(db.SCHEMA)
-        conn.execute("ALTER TABLE event_log ADD COLUMN reason_text TEXT")
         conn.execute("""INSERT INTO event_log
             (created_at, grade, action, reason, reason_text, queue)
             VALUES ('2026-01-01T01:00:00+00:00', 'sensitive_S', 'revert_original',

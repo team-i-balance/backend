@@ -1,4 +1,5 @@
 """Local-only PII pseudonymization. No server or external API calls."""
+from collections import Counter
 from dataclasses import dataclass
 from .detector import Detector
 from .pseudonym import PseudonymSession
@@ -11,6 +12,8 @@ class CheckResult:
     remaining: tuple[dict, ...]
     coverage: str
     detection_count: int = 0  # number of detected spans (not distinct types)
+    # (type, span count) pairs sorted by type; the counts add up to detection_count.
+    detection_counts: tuple[tuple[str, int], ...] = ()
 
 
 class LocalSession:
@@ -28,9 +31,10 @@ class LocalSession:
         detections = self.detector.detect(text)
         anonymized = self._pseudonyms.pseudonymize(text, detections)
         remaining = self.detector.detect(anonymized)
-        return CheckResult(anonymized, tuple(sorted({d['type'] for d in detections})),
+        counts = Counter(d['type'] for d in detections)
+        return CheckResult(anonymized, tuple(sorted(counts)),
                            tuple(remaining), 'model_and_rules' if self.detector.model_enabled else 'rules_only_incomplete',
-                           len(detections))
+                           len(detections), tuple(sorted(counts.items())))
 
     def restore(self, text: str):
         if self._closed:

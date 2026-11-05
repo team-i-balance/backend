@@ -140,7 +140,7 @@ def test_download_releases_bytes_but_retains_mapping_until_expiry(storage, monke
     store = storage.module.FileWorkStore(ttl_seconds=10, max_bytes=9)
     first, session = add(storage, store)
     deadline, expires_at = first.deadline, first.expires_at
-    payload = store.take_download("one")
+    payload = store.take_download("one").data
     assert payload == b"protected"
     assert first.downloaded and first.file_bytes == b""
     assert store.take_download("one") is None and not session.closed.is_set()
@@ -155,7 +155,7 @@ def test_download_releases_bytes_but_retains_mapping_until_expiry(storage, monke
 def test_downloaded_mapping_still_counts_toward_item_limit(storage):
     store = storage.module.FileWorkStore(max_items=1)
     _, session = add(storage, store)
-    assert store.take_download("one") == b"protected"
+    assert store.take_download("one").data == b"protected"
     with pytest.raises(storage.module.FileStoreFull):
         add(storage, store, "two")
     assert not session.closed.is_set()
@@ -187,7 +187,8 @@ def test_download_and_internal_take_cannot_both_receive_file_bytes(storage):
 
     def download():
         barrier.wait()
-        return store.take_download("one")
+        claim = store.take_download("one")
+        return None if claim is None else claim.data
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         claimed = pool.submit(take)
