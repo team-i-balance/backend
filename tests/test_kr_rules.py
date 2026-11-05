@@ -320,3 +320,27 @@ class KoreanPasswordLabelBoundaryTests(unittest.TestCase):
                 r = s.process(text)
             self.assertNotIn(secret, r.text, text)
             self.assertIn('PASSWORD', r.detection_types, text)
+
+
+class SameLineContextTests(unittest.TestCase):
+    """PR #31 review: context and password values stay on their own line."""
+
+    def run_(self, text):
+        with LocalSession(Detector(None)) as s:
+            return s.process(text)
+
+    def test_empty_password_field_does_not_take_next_line(self):
+        r = self.run_('password_confirmation:\nusername: alice')
+        self.assertIn('username:', r.text)
+        self.assertNotIn('PASSWORD', r.detection_types)
+
+    def test_numbered_account_labels(self):
+        for text in ['account1=110-123-456789', '계좌1: 110-123-456789', '신한 계좌 1: 110-123-456789']:
+            r = self.run_(text)
+            self.assertNotIn('110-123-456789', r.text, text)
+            self.assertIn('ACCOUNT', r.detection_types, text)
+
+    def test_account_context_does_not_cross_lines(self):
+        for text in ['값: 1234567890\n입금 예정', '계좌:\n값: 1234567890']:
+            r = self.run_(text)
+            self.assertNotIn('ACCOUNT', r.detection_types, text)

@@ -26,10 +26,14 @@ _TOKEN = re.compile(r'\[[^\[\]\r\n]+_\d+\]')
 
 
 def _ctx(text, start, end, words, before=25, after=12, pattern=None):
-    # Stop at a neighbouring value or placeholder: a masked value ([계좌번호_1]) is
-    # shorter and holds label words, so re-inspection would otherwise see other context.
-    left = re.split(r'[0-9\]]', text[max(0, start - before):start])[-1]
-    right = re.split(r'[0-9\[]', text[end:end + after])[0]
+    # Context stays on the value's own line, and stops at a neighbouring value (3+ digits)
+    # or placeholder: a masked value ([계좌번호_1]) is shorter and holds label words, so
+    # re-inspection would otherwise see other context. Short digits stay, so numbered
+    # labels ('계좌1:', 'account1=') still count.
+    left = text[max(0, start - before):start].rsplit('\n', 1)[-1]
+    right = text[end:end + after].split('\n', 1)[0]
+    left = re.split(r'[0-9]{3,}|\]', left)[-1]
+    right = re.split(r'[0-9]{3,}|\[', right)[0]
     seg = (left + ' ' + right).lower()
     if pattern is not None and pattern.search(seg):
         return True
@@ -252,7 +256,8 @@ _PW_KV_RE = re.compile(
     # Confirm/repeat fields only (password_confirmation, password2, 비밀번호 확인); metadata
     # keys such as password_min_length / password_hint do not end like this and stay out.
     r'''(?:[_.\-]?(?:confirmation|confirmed|confirm|again|repeat|retype|verify|check|\d)|\s?(?:확인|재확인|재입력|다시\s?입력))?)'''
-    r'''["']?\s*(?P<sep>:=|=>|[:=：])\s*'''
+    # Horizontal whitespace only: an empty field must not take the next line's key as its value.
+    r'''["']?[ \t]*(?P<sep>:=|=>|[:=：])[ \t]*'''
     r'''(?:"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)'|(?P<v>[^\s"']+))'''
 )
 _PW_PLACEHOLDER = re.compile(
@@ -264,7 +269,7 @@ _URL_CRED_RE = re.compile(r'(?i)(?<![a-z0-9])[a-z][a-z0-9+.\-]*://[^:/\s@]+:(?P<
 _KO_PW_RE = re.compile(
     # The label must end the word: '암호화=AES256' or '비밀번호정책=strict' is not a password field.
     r'''(?:비밀번호|비번|패스워드|암호)(?:(?:은|는|이|가|를|을|도)(?![가-힣])|(?![가-힣A-Za-z0-9_]))'''
-    r'''\s*(?P<sep>:|=|->|→|은|는)?\s*'''
+    r'''[ \t]*(?P<sep>:|=|->|→|은|는)?[ \t]*'''
     r'''(?:"(?P<dq>[^"\n]+)"|'(?P<sq>[^'\n]+)'|`(?P<bq>[^`\n]+)`|(?P<v>[^\s"'`]+))'''
 )
 _HANGUL = re.compile(r'[가-힣]')
