@@ -19,6 +19,9 @@ class DraftIn(BaseModel):
 
     payload: dict
     changes: list[DraftChangeIn] = Field(max_length=500)
+    # Unsigned console screen state (may contain plaintext). Stored with the
+    # draft but never copied into a published payload; null/omitted clears it.
+    console_state: dict | None = None
 
 
 class DraftChangeOut(BaseModel):
@@ -31,6 +34,7 @@ class DraftChangeOut(BaseModel):
 class DraftOut(BaseModel):
     payload: dict | None
     changes: list[DraftChangeOut]
+    console_state: dict | None
     has_draft: bool
     base_version: int | None
     revision: int

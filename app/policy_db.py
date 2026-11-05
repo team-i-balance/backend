@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS policy_draft (
     updated_at TEXT NOT NULL,
     updated_by TEXT NOT NULL
 );
+-- Console UI restore state (may hold plaintext). Never signed or published, and
+-- kept in its own table so publishing (which deletes policy_draft) leaves it.
+CREATE TABLE IF NOT EXISTS policy_console_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    state TEXT NOT NULL
+);
 """
 
 
