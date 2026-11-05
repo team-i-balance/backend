@@ -6,6 +6,10 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 
+# Top-level payload key that once carried console plaintext; never signable.
+FORBIDDEN_PAYLOAD_KEYS = ("console",)
+
+
 class DraftError(Exception):
     def __init__(self, status_code: int, detail: str):
         self.status_code = status_code
@@ -32,6 +36,8 @@ def read_draft(conn) -> dict:
             "base_version": latest["version"] if latest else None,
             "revision": 0, "updated_at": None, "updated_by": None,
         }
+    console = conn.execute("SELECT state FROM policy_console_state WHERE singleton = 1").fetchone()
+    state["console_state"] = json.loads(console["state"]) if console else None
     # Revision prevents an old writer from passing the check after A -> B -> A,
     # even with the same payload/changes and a frozen server clock.
     canonical = json.dumps(state, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -47,7 +53,14 @@ def require_match(state: dict, if_match: str | None) -> None:
         raise DraftError(409, "DRAFT_CONFLICT")
 
 
-def save_draft(conn, payload: dict, changes: list[dict], *, if_match: str | None, editor: str) -> dict:
+def reject_unsignable(payload: dict) -> None:
+    """Console screen state belongs in console_state, never in a signed bundle."""
+    if any(key in payload for key in FORBIDDEN_PAYLOAD_KEYS):
+        raise DraftError(422, "POLICY_PAYLOAD_CONSOLE_FORBIDDEN")
+
+
+def save_draft(conn, payload: dict, changes: list[dict], *, if_match: str | None, editor: str,
+               console_state: dict | None = None) -> dict:
     before = read_draft(conn)
     require_match(before, if_match)
     now = datetime.now(timezone.utc).isoformat()
@@ -72,4 +85,12 @@ def save_draft(conn, payload: dict, changes: list[dict], *, if_match: str | None
         (before["revision"] + 1, json.dumps(payload, ensure_ascii=False),
          json.dumps(stamped, ensure_ascii=False), before["base_version"], now, editor),
     )
+    if console_state is None:
+        conn.execute("DELETE FROM policy_console_state WHERE singleton = 1")
+    else:
+        conn.execute(
+            """INSERT INTO policy_console_state (singleton, state) VALUES (1, ?)
+               ON CONFLICT(singleton) DO UPDATE SET state=excluded.state""",
+            (json.dumps(console_state, ensure_ascii=False),),
+        )
     return read_draft(conn)

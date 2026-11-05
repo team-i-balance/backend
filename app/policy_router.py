@@ -125,7 +125,7 @@ def put_draft(
     try:
         state = store.save_draft(
             body.payload, [change.model_dump() for change in body.changes],
-            if_match=if_match, editor=editor,
+            if_match=if_match, editor=editor, console_state=body.console_state,
         )
     except DraftError as exc:
         raise _draft_error(exc) from exc
