@@ -5,6 +5,10 @@ _FIELD_VALUE = r'''(?:"(?P<double>[^"\r\n]+)"|'(?P<single>[^'\r\n]+)'|(?P<bare>[
 _SECRET = re.compile(
     r'''(?i)(?<![\w])['"]?(?P<field>(?:[a-z][a-z0-9_-]*[_-])?(?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|secret[_-]?key|password|passwd|pwd|passphrase|client[_-]?secret))['"]?\s*[:=]\s*'''
     + _FIELD_VALUE
+    # The value may sit on the next line (YAML), but not when it is itself a key:
+    # an empty 'password:' followed by 'username: alice' / '"username": "alice"'.
+    # A bare value is taken whole (no shortening by backtracking) and must not end in ':'.
+    + r'''(?(bare)(?<![:：])(?=[\s,;\[\]{}"']|$))(?![ \t]*[:：])'''
 )
 _SHELL_DEFAULT = re.compile(r'''(?i)(?<![\w])(?:[a-z][a-z0-9_-]*[_-])?(?:api[_-]?key|api[_-]?token|access[_-]?token|password|passwd|pwd|client[_-]?secret)\s*=\s*\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}\s]+)\}''')
 _PROVIDER = re.compile(r'(?<![\w-])(?:SG\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|AIza[A-Za-z0-9_-]{20,}|SK[0-9a-fA-F]{32})(?![\w-])')

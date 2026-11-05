@@ -1,0 +1,435 @@
+"""Korean structured rules (local_ai/kr_rules.py). All numbers are fake; checksums are computed."""
+import unittest
+
+from app.grading import decide_grade
+from app.schemas import Grade
+from local_ai.detector import Detector
+from local_ai.kr_rules import id_checksum_ok, kr_structured_detections, luhn_ok
+from local_ai.pipeline import LocalSession
+from local_ai.pseudonym import PseudonymError
+
+
+def id_number(prefix12, valid=True):
+    return next(prefix12 + str(d) for d in range(10) if id_checksum_ok(prefix12 + str(d)) == valid)
+
+
+def card(prefix):
+    return next(prefix + str(d) for d in range(10) if luhn_ok(prefix + str(d)))
+
+
+def dash_id(n):
+    return n[:6] + '-' + n[6:]
+
+
+def group4(n, sep=' '):
+    return sep.join(n[i:i + 4] for i in range(0, len(n), 4))
+
+
+RRN = id_number('900101123456')           # checksum ok
+RRN_2020 = id_number('900101123456', False)  # post-2020 style: no checksum
+FRN = id_number('850315512345')
+VISA = card('411111111111111')
+MASTER = card('555555555555444')
+AMEX = card('37828224631000')
+AMEX_FMT = AMEX[:4] + '-' + AMEX[4:10] + '-' + AMEX[10:]
+
+
+class KrRulesTests(unittest.TestCase):
+    def setUp(self):
+        self.detector = Detector(None)
+
+    def matched(self, text):
+        return [(x['type'], text[x['start']:x['end']]) for x in self.detector.detect(text)]
+
+    def test_positive(self):
+        cases = [
+            (f'주민번호 {dash_id(RRN)} 입니다', 'ID_NUMBER', dash_id(RRN)),
+            (f'{dash_id(RRN_2020)} (2020년 이후 발급, 체크섬 무의미)', 'ID_NUMBER', dash_id(RRN_2020)),
+            (f'외국인등록번호: {dash_id(FRN)}', 'ID_NUMBER', dash_id(FRN)),
+            (f'주민 {RRN} 확인', 'ID_NUMBER', RRN),
+            (f'카드 {group4(VISA)} 로 결제', 'CARD', group4(VISA)),
+            (group4(MASTER, '-'), 'CARD', group4(MASTER, '-')),
+            (f'아멕스 {AMEX_FMT}', 'CARD', AMEX_FMT),
+            ('신한 110-123-456789 로 입금해줘', 'ACCOUNT', '110-123-456789'),
+            ('카카오뱅크 3333-01-1234567', 'ACCOUNT', '3333-01-1234567'),
+            ('계좌 1002123456789 예금주 홍길동', 'ACCOUNT', '1002123456789'),
+            ('서버 192.168.0.10 접속 안 됨', 'IP_ADDRESS', '192.168.0.10'),
+            ('접속지 203.0.113.7.', 'IP_ADDRESS', '203.0.113.7'),
+            ('ping 2001:db8::1', 'IP_ADDRESS', '2001:db8::1'),
+            ('DB_PASSWORD=Sup3r!Secret', 'PASSWORD', 'Sup3r!Secret'),
+            ('{"user": "hong", "password": "hunter2"}', 'PASSWORD', 'hunter2'),
+            ('비밀번호는 qwer1234!야', 'PASSWORD', 'qwer1234!'),
+            ('비번: abcd1234', 'PASSWORD', 'abcd1234'),
+            ('pw: zx9!kq', 'PASSWORD', 'zx9!kq'),
+            ('생년월일: 1990-01-02', 'DOB', '1990-01-02'),
+            ('생일은 1990년 1월 2일', 'DOB', '1990년 1월 2일'),
+            ('DOB 19900102', 'DOB', '19900102'),
+            ('1990.01.02생', 'DOB', '1990.01.02'),
+        ]
+        for text, kind, value in cases:
+            with self.subTest(text=text):
+                self.assertIn((kind, value), self.matched(text))
+
+    def test_negative(self):
+        cases = [
+            '비밀번호 변경 방법 알려줘',
+            '비밀번호 8자리 이상으로 설정',
+            'PASSWORD_MIN_LENGTH=8',
+            'password: ${DB_PASSWORD}',
+            'DB_PASSWORD=${DB_PASSWORD}',
+            '버전 v1.2.3.4 배포',
+            '버전 1.2.3.4 배포',
+            '회의는 12:30:45 에 시작',
+            '2024-11-04 에 결제한 1,234,567원',
+            '결제 금액 12,345,678원',
+            '회의 날짜 2024.11.04',
+            'localhost 127.0.0.1 로 띄움',
+            '주문번호 2024110412345 조회',
+            f'주문번호 {VISA} 조회',
+            f'운송장 {VISA}',
+            f'운송장번호 {RRN}',
+            '송장번호 6012345678901 배송중',
+            '그냥 숫자 1002123456789',
+            'uuid 550e8400-e29b-41d4-a716-446655440000',
+            'x[a::b] slice',
+            '그냥 숫자 9001011234567',
+            f'카드 주문번호 {VISA}',
+            '신한 주문번호 110-123-456789',
+            '비밀번호: {{SECRET}}',
+            '비밀번호 재설정: 이메일을 입력하세요',
+            'version: 1.2.3.4',
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.matched(text), [])
+
+    def test_reinspection_stays_clean(self):
+        # Masked values are shorter and hold label words; re-inspection must not find new spans.
+        texts = [
+            '생년월일 1990-01-02, 주문일 2024-01-01',
+            '계좌 ０１０-1234-5678',
+            '카드 ４１１１ 1111 1111 1111',
+            '신한 110-123-456789 그리고 1234567890',
+            '비밀번호: abc123; 생년월일 1990-01-02',
+        ]
+        for text in texts:
+            with self.subTest(text=text):
+                with LocalSession(Detector(None)) as session:
+                    self.assertEqual(session.process(text).remaining, ())
+        self.assertEqual(self.matched('생년월일 1990-01-02, 주문일 2024-01-01'), [('DOB', '1990-01-02')])
+
+    def test_no_cross_type_overlap(self):
+        # Card digits must not also become phone/business numbers; account must not take a phone.
+        texts = [
+            f'카드 {VISA} 사업자번호 없음',
+            f'카드번호: {group4(VISA)} 연락처 010-1234-5678',
+            '신한 계좌 010-1234-5678 로 입금',
+            'postgres://admin:s3cretpw@db.internal:5432/app',
+            f'생년월일 {dash_id(RRN)}',
+            'password=sk-abcdefghijklmnopqrstuvwx',
+            'pw=hong@example.com',
+        ]
+        for text in texts:
+            with self.subTest(text=text):
+                spans = sorted(self.detector.detect(text), key=lambda x: x['start'])
+                for a, b in zip(spans, spans[1:]):
+                    self.assertFalse(a['end'] > b['start'] and a['type'] != b['type'], spans)
+        self.assertEqual(self.matched(f'생년월일 {dash_id(RRN)}'), [('ID_NUMBER', dash_id(RRN))])
+
+    def process(self, text):
+        with LocalSession(Detector(None)) as session:
+            result = session.process(text)
+            self.assertEqual(result.remaining, ())
+            return result, session.restore(result.text)
+
+    def test_password_beats_email(self):
+        # Review #1: the value is a password (C, never restored), not an email (S).
+        result, restored = self.process('pw=hong@example.com')
+        self.assertEqual(result.text, 'pw=[비밀번호_1]')
+        self.assertEqual(decide_grade(result.detection_types), Grade.confidential)
+        self.assertEqual(restored.blocked, ('[비밀번호_1]',))
+        # Connection URL: only the password part; the host stays.
+        result, _ = self.process('postgres://admin:s3cretpw@db.internal:5432/app')
+        self.assertEqual(result.text, 'postgres://admin:[비밀번호_1]@db.internal:5432/app')
+        self.assertEqual(result.detection_types, ('PASSWORD',))
+
+    def test_password_absorbs_rule_spans(self):
+        # Review #2: a phone inside the value is dropped; a partial overlap widens the password.
+        result, _ = self.process('비밀번호: abc010-1234-5678xyz')
+        self.assertEqual(result.text, '비밀번호: [비밀번호_1]')
+        result, _ = self.process('pw=abc010-1234 5678 끝')
+        self.assertEqual(result.text, 'pw=[비밀번호_1] 끝')
+        self.assertEqual(result.detection_types, ('PASSWORD',))
+
+    def test_password_with_hangul(self):
+        # Review #4: quoted -> everything inside; unquoted -> up to whitespace minus a particle.
+        cases = [
+            ('비밀번호: "한글암호123!"', '비밀번호: "[비밀번호_1]"'),
+            ('password="abc한글"', 'password="[비밀번호_1]"'),
+            ('비밀번호: abc한글', '비밀번호: [비밀번호_1]'),
+            ('비밀번호는 abc123입니다', '비밀번호는 [비밀번호_1]입니다'),
+            # Hangul before the particle: kept whole (the last syllable may be in the password).
+            ('비밀번호를 한글암호123!로 바꿨어', '비밀번호를 [비밀번호_1] 바꿨어'),
+            ('pw: 비밀123이', 'pw: [비밀번호_1]'),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.process(text)[0].text, expected)
+
+    def test_password_reaching_into_numbers_is_widened(self):
+        # Codex re-review: a card/ID run past an unquoted password must not leak its tail.
+        for text in (f'pw={group4(VISA)}', f'pw={RRN[:6]} {RRN[6:]}'):
+            with self.subTest(text=text):
+                self.assertEqual(self.process(text)[0].text, 'pw=[비밀번호_1]')
+
+    def test_assignment_value_is_taken_whole(self):
+        # Codex re-review: 'pw=' is config syntax; no particle cut, no prose filter.
+        self.assertEqual(self.process('pw=비밀123이')[0].text, 'pw=[비밀번호_1]')
+        self.assertEqual(self.process('pw=8자리Secret!')[0].text, 'pw=[비밀번호_1]')
+
+    def test_particle_man_is_not_an_amount(self):
+        self.assertEqual(self.matched('신한 계좌 1002123456789만 사용해'), [('ACCOUNT', '1002123456789')])
+        self.assertEqual(self.matched('신한 거래 1002123456789만원'), [])
+
+    def test_single_quote_inside_double_quotes(self):
+        # Review #5
+        self.assertEqual(self.process('pw="ab\'cd123"')[0].text, 'pw="[비밀번호_1]"')
+
+    def test_card_followed_by_extra_digits(self):
+        # Review #6: the longest Luhn-valid run of groups wins.
+        text = f'카드 {group4(VISA)} 123'
+        self.assertEqual(self.matched(text), [('CARD', group4(VISA))])
+        # The order-number label before the whole digit run still excludes it.
+        self.assertEqual(self.matched(f'주문번호 123 {group4(VISA)}'), [])
+
+    def test_amount_and_common_words_are_not_accounts(self):
+        # Review #7
+        for text in ('우리 매출은 10000000000원입니다', '하나 더 1002123456789 주세요',
+                     '신한 거래 금액 1002123456789 원'):
+            with self.subTest(text=text):
+                self.assertEqual(self.matched(text), [])
+        self.assertEqual(self.matched('우리은행 1002-123-456789'), [('ACCOUNT', '1002-123-456789')])
+        self.assertEqual(self.matched('하나 계좌 1002123456789'), [('ACCOUNT', '1002123456789')])
+
+    def test_order_number_is_not_an_id(self):
+        # Review #8: negative context wins even with a valid checksum, unless an ID label precedes.
+        self.assertEqual(self.matched(f'주문번호 {dash_id(RRN)}'), [])
+        self.assertEqual(self.matched(f'접수 {dash_id(RRN)}'), [])
+        # The label closest to the value decides (PR #31 review).
+        self.assertEqual(self.matched(f'주문번호 ABC 주민번호 {dash_id(RRN)}'), [('ID_NUMBER', dash_id(RRN))])
+        self.assertEqual(self.matched(f'주민번호(주문번호 {dash_id(RRN)})'), [])
+
+    def test_nearest_label_beats_order_context(self):
+        # PR #31 review #2: an explicit payment label closer to the value wins.
+        self.assertEqual(self.matched(f'주문번호: ABC 카드: {VISA}'), [('CARD', VISA)])
+        self.assertEqual(self.matched('주문번호 ABC 신한 계좌 110-123-456789'),
+                         [('ACCOUNT', '110-123-456789')])
+        # Order word closest -> still excluded.
+        self.assertEqual(self.matched(f'카드 주문번호 {VISA}'), [])
+        self.assertEqual(self.matched(f'주문번호 {dash_id(RRN)}'), [])
+
+    def test_unquoted_value_stops_at_delimiters(self):
+        # PR #31 review #1: ; , & | and an unmatched ')' end an unquoted value.
+        cases = [
+            ('password=secret;user=alice', 'secret'),
+            ('PASSWORD=hunter2; echo done', 'hunter2'),
+            ('pw=abc,id=x', 'abc'),
+            ('pw=abc|next', 'abc'),
+            ('?pw=abc&x=1', 'abc'),
+            ('func(pw=abc)', 'abc'),
+            ('pw=abc123)', 'abc123'),
+            ('pw=(abc)', '(abc)'),
+            ('pw=a(b)c', 'a(b)c'),
+        ]
+        # The field after the delimiter is still checked (local Codex re-review).
+        text = 'password=secret;password2=secondsecret'
+        self.assertEqual(self.matched(text), [('PASSWORD', 'secret'), ('PASSWORD', 'secondsecret')])
+        self.assertEqual(self.process(text)[0].text, 'password=[비밀번호_1];password2=[비밀번호_2]')
+        self.assertEqual(self.matched('?pw=abc&pwd=xyz9'), [('PASSWORD', 'abc'), ('PASSWORD', 'xyz9')])
+        for text, value in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.matched(text), [('PASSWORD', value)])
+                self.assertEqual(self.process(text)[0].remaining, ())
+
+    def test_password_confirm_fields(self):
+        # PR #31 review #3: confirm/new/old fields are passwords; metadata keys are not.
+        for key in ('password_confirmation', 'password_confirm', 'confirm_password', 'new_password',
+                    'old_password', 'current_password', 'password2', 'passwordConfirm'):
+            with self.subTest(key=key):
+                self.assertEqual(self.matched(f'{key}=Zx9!kq77'), [('PASSWORD', 'Zx9!kq77')])
+        for label in ('비밀번호 확인', '새 비밀번호', '비밀번호 재입력'):
+            with self.subTest(label=label):
+                self.assertEqual(self.matched(f'{label}: Zx9!kq77'), [('PASSWORD', 'Zx9!kq77')])
+        for text in ('password_min_length=8', 'password_policy=strict', 'password_expiry_days=90',
+                     'password_hint=dog', '비밀번호 힌트: 강아지 이름', 'PASSWORD_MIN_LENGTH=8'):
+            with self.subTest(text=text):
+                self.assertEqual(self.matched(text), [])
+
+    def test_order_word_elsewhere_does_not_hide_card(self):
+        self.assertEqual(self.matched(f'주문 완료, 카드 {VISA}'), [('CARD', VISA)])
+
+    def test_function_contract(self):
+        text = f'카드 {VISA} / 서버 10.0.0.5'
+        spans = kr_structured_detections(text)
+        self.assertEqual([(s['type'], text[s['start']:s['end']]) for s in spans],
+                         [('CARD', VISA), ('IP_ADDRESS', '10.0.0.5')])
+        self.assertTrue(all(set(s) == {'start', 'end', 'type'} for s in spans))
+        self.assertEqual(kr_structured_detections(''), [])
+
+    def test_end_to_end_pseudonymize(self):
+        text = (f'주민 {dash_id(RRN)}, 카드 {group4(VISA)}, 신한 110-123-456789, '
+                f'서버 192.168.0.10, 생년월일 1990-01-02, 비밀번호: Sup3r!Secret')
+        with LocalSession(Detector(None)) as session:
+            result = session.process(text)
+            self.assertEqual(result.remaining, ())
+            self.assertEqual(result.text, '주민 [식별번호_1], 카드 [카드번호_1], 신한 [계좌번호_1], '
+                                          '서버 [IP주소_1], 생년월일 [생년월일_1], 비밀번호: [비밀번호_1]')
+            self.assertEqual(set(result.detection_types),
+                             {'ID_NUMBER', 'CARD', 'ACCOUNT', 'IP_ADDRESS', 'DOB', 'PASSWORD'})
+            restored = session.restore(result.text)
+            self.assertEqual(restored.blocked, ('[비밀번호_1]',))
+            self.assertIn(dash_id(RRN), restored.text)
+
+    def test_grades(self):
+        self.assertEqual(decide_grade([t for t, _ in self.matched('비밀번호: Sup3r!Secret')]), Grade.confidential)
+        for text in (f'주민번호 {dash_id(RRN)}', f'카드 {group4(VISA)}', '신한 110-123-456789 입금',
+                     '서버 192.168.0.10', '생년월일 1990-01-02'):
+            with self.subTest(text=text):
+                types = [t for t, _ in self.matched(text)]
+                self.assertTrue(types)
+                self.assertEqual(decide_grade(types), Grade.sensitive)
+
+
+if __name__ == '__main__':
+    unittest.main()
+
+
+class KoreanPasswordLabelBoundaryTests(unittest.TestCase):
+    """PR #31 review: a word that merely starts with a password label is not a field."""
+
+    def test_longer_words_are_not_labels(self):
+        for text in ['암호화=AES256', '비밀번호정책=strict', '암호화 방식은 AES256이야', '비번변경 안내 메일 써줘']:
+            with LocalSession(Detector(None)) as s:
+                r = s.process(text)
+            self.assertNotIn('PASSWORD', r.detection_types, text)
+
+    def test_labels_with_particles_or_separators_still_detected(self):
+        for text, secret in [('비밀번호는 qwer1234!야', 'qwer1234!'), ('암호: Zx9!kk22', 'Zx9!kk22'),
+                             ('비번이 abc12345', 'abc12345'), ('패스워드=hunter2', 'hunter2')]:
+            with LocalSession(Detector(None)) as s:
+                r = s.process(text)
+            self.assertNotIn(secret, r.text, text)
+            self.assertIn('PASSWORD', r.detection_types, text)
+
+
+class SameLineContextTests(unittest.TestCase):
+    """PR #31 review: context and password values stay on their own line."""
+
+    def run_(self, text):
+        with LocalSession(Detector(None)) as s:
+            return s.process(text)
+
+    def test_empty_password_field_does_not_take_next_line(self):
+        r = self.run_('password_confirmation:\nusername: alice')
+        self.assertIn('username:', r.text)
+        self.assertNotIn('PASSWORD', r.detection_types)
+
+    def test_numbered_account_labels(self):
+        for text in ['account1=110-123-456789', '계좌1: 110-123-456789', '신한 계좌 1: 110-123-456789']:
+            r = self.run_(text)
+            self.assertNotIn('110-123-456789', r.text, text)
+            self.assertIn('ACCOUNT', r.detection_types, text)
+
+    def test_account_context_does_not_cross_lines(self):
+        for text in ['값: 1234567890\n입금 예정', '계좌:\n값: 1234567890']:
+            r = self.run_(text)
+            self.assertNotIn('ACCOUNT', r.detection_types, text)
+
+
+class LocalCodexRoundTests(unittest.TestCase):
+    """Local Codex review on PR #31 (round after same-line context)."""
+
+    def run_(self, text):
+        with LocalSession(Detector(None)) as s:
+            return s.process(text)
+
+    def test_label_on_previous_line(self):
+        r = self.run_('계좌:\n110-123-456789')
+        self.assertNotIn('110-123-456789', r.text)
+        for text in ['비밀번호:\nZx9!kq77', '비밀번호:\u00a0Zx9!kq77']:
+            self.assertNotIn('Zx9!kq77', self.run_(text).text, repr(text))
+
+    def test_comma_bounds_account_context(self):
+        r = self.run_('계좌 1개, 매출 1234567890 기록')
+        self.assertNotIn('ACCOUNT', r.detection_types)
+
+    def test_account_containing_phone_shape(self):
+        r = self.run_('계좌1: 123-010-1234-5678')
+        self.assertNotIn('010-1234-5678', r.text)
+        self.assertEqual(r.remaining, ())
+
+    def test_quoted_dollar_and_escaped_quote_passwords(self):
+        self.assertNotIn('Abc123!', self.run_('pw="$Abc123!"').text)
+        self.assertNotIn('secret123', self.run_('pw="abc\\"secret123"').text)
+        self.assertIn('${DB_PASSWORD}', self.run_('pw="${DB_PASSWORD}"').text)
+
+    def test_policy_prose_and_change_dates(self):
+        for text in ['비밀번호는 90일마다 변경해 주세요', '비밀번호는 8~16자입니다.']:
+            self.assertNotIn('PASSWORD', self.run_(text).detection_types, text)
+        self.assertNotIn('DOB', self.run_('생년월일 변경일 2024-01-01').detection_types)
+        self.assertIn('DOB', self.run_('생년월일 1990-03-15').detection_types)
+
+
+class LocalCodexRound2Tests(unittest.TestCase):
+    def run_(self, text):
+        with LocalSession(Detector(None)) as s:
+            return s.process(text)
+
+    def test_next_line_key_is_rescanned(self):
+        self.assertNotIn('secret123', self.run_('password:\npassword2: secret123').text)
+
+    def test_other_date_word_before_birth_label(self):
+        r = self.run_('등록일 미상 생년월일: 1990-03-15')
+        self.assertNotIn('1990-03-15', r.text)
+
+
+class GithubCodexRound6Tests(unittest.TestCase):
+    def run_(self, text):
+        with LocalSession(Detector(None)) as s:
+            return s.process(text)
+
+    def test_quoted_key_after_empty_password(self):
+        r = self.run_('password:\n"username": "alice"')
+        self.assertIn('username', r.text)
+        self.assertNotIn('PASSWORD', r.detection_types)
+        self.assertNotIn('s3cret!x', self.run_('password:\n"pw2": "s3cret!x"').text)
+        self.assertNotIn('Zx9!kq77', self.run_('비밀번호:\n"Zx9!kq77"').text)
+
+    def test_ascii_context_words_are_whole_words(self):
+        for text in ['accounting code 1234567890', 'bankruptcy case 1234567890']:
+            self.assertNotIn('ACCOUNT', self.run_(text).detection_types, text)
+        self.assertIn('ACCOUNT', self.run_('bank account 1234567890').detection_types)
+
+
+class LocalCodexRound3Tests(unittest.TestCase):
+    def run_(self, text):
+        with LocalSession(Detector(None)) as s:
+            return s.process(text)
+
+    def test_english_birth_labels(self):
+        for text in ['birthday: 1990-03-15', 'birthdate: 1990-03-15', 'date of birth 1990-03-15']:
+            self.assertNotIn('1990-03-15', self.run_(text).text, text)
+
+    def test_yaml_secrets_on_next_line(self):
+        r = self.run_('client_secret:\n  "Zx9!kq77"\nauth_token:\n  "Ab7!pq93"')
+        self.assertNotIn('Zx9!kq77', r.text)
+        self.assertNotIn('Ab7!pq93', r.text)
+
+
+class LocalCodexRound4Tests(unittest.TestCase):
+    def test_base64_secret_with_padding(self):
+        for text in ['auth_token=YWJjZA==', 'password=abc=', 'api_key: "QUJD=="']:
+            with LocalSession(Detector(None)) as s:
+                r = s.process(text)
+            self.assertFalse(r.text.endswith('='), (text, r.text))
+            self.assertNotIn('YWJj', r.text)

@@ -17,6 +17,7 @@ import json
 import re
 from pathlib import Path
 from .additional_rules import detect_additional
+from .kr_rules import kr_structured_detections, password_first
 from .preprocessing import normalize_for_detection, restore_detection_offsets
 
 _PHONE = re.compile(r'(?<![0-9])01[016789][ -]?[0-9]{3,4}[ -]?[0-9]{4}(?![0-9])')
@@ -73,6 +74,7 @@ def _structured_detections(text: str) -> list[dict]:
         if not _PLACEHOLDER.fullmatch(value):
             found.append({'start': match.start('value'), 'end': match.end('value'), 'type': 'ACCESS_TOKEN'})
     found.extend(detect_additional(text, found))
+    found.extend(kr_structured_detections(text, found))
     for match in _PROVIDER_API_KEY.finditer(text):
         if not any(x['type'] in ('API_KEY', 'ACCESS_TOKEN', 'PASSWORD') and x['start'] <= match.start() and x['end'] >= match.end() for x in found):
             found.append({'start': match.start(), 'end': match.end(), 'type': 'API_KEY'})
@@ -92,9 +94,15 @@ _TYPES = {
 
 # Types produced by regex/structured rules; they keep their extent when the SLM overlaps them
 # (see Detector._add_slm_spans for the grade-C exception).
-_RULE_TYPES = frozenset({'PHONE', 'EMAIL', 'BUSINESS_NUMBER', 'API_KEY', 'ACCESS_TOKEN'})
-_SECRET_RULE_TYPES = frozenset({'API_KEY', 'ACCESS_TOKEN'})
-_GRADE_C_SLM_TYPES = frozenset({'CONFIDENTIAL', 'SENSITIVE'})
+_RULE_TYPES = frozenset({'PHONE', 'EMAIL', 'BUSINESS_NUMBER', 'API_KEY', 'ACCESS_TOKEN',
+                         'ID_NUMBER', 'CARD', 'ACCOUNT', 'IP_ADDRESS', 'PASSWORD', 'DOB'})
+# An SLM leftover made only of these field labels (plus particles) is dropped after the cut:
+# "주민번호 900101-…" flagged whole by the SLM must not mask the word "주민번호" on its own.
+_LABEL_ONLY = re.compile(
+    r'(?i)(?:(?:주민등록번호|주민번호|외국인등록번호|외국인번호|카드번호|카드|계좌번호|계좌|전화번호|전화|연락처|'
+    r'휴대폰|번호|ip|아이피|생년월일|생일|비밀번호|패스워드|pw|password|이메일|메일)'
+    r'(?:은|는|이|가|을|를|의|도|와|과|로|으로|에|에서|만)?)+')
+_LABEL_STRIP = re.compile(r'[\s\W_]+')
 # Left at SLM span edges after cutting around rule spans.
 _TRIM_CHARS = frozenset(' \t\r\n,.;:/·()[]')
 
@@ -263,7 +271,8 @@ class Detector:
                  for kind, pattern in (('PHONE', _PHONE), ('EMAIL', _EMAIL))
                  for m in pattern.finditer(text)]
         structured = _structured_detections(text)
-        found.extend(structured)
+        # A password value beats phone/email/number spans inside it (kr_rules.password_first).
+        found = password_first(text, found + structured)
         if not self.model_enabled or not text:
             return self._apply_policy(_merge_overlaps(found))
         try:
@@ -284,41 +293,37 @@ class Detector:
     def _add_slm_spans(self, text: str, found: list[dict]) -> list[dict]:
         """Add SLM spans without cross-type overlaps (which pseudonymization rejects).
 
-        - Secret rule spans (API key, token) always keep their extent; SLM spans are cut around them.
-        - Other rule spans (phone, email, business number) keep their extent too, unless a
-          grade-C SLM span (CONFIDENTIAL / SENSITIVE) covers them: then the SLM span absorbs
-          them so the policy grade is not lost.
+        - Rule-engine spans (keys, passwords, phone, email, resident/card/account numbers, IP,
+          birth dates) always keep their extent and type: checksums and formats are more
+          reliable than the SLM, which tends to mislabel such numbers (e.g. a resident number
+          as an address or a card number as an internal host). SLM spans are cut around them.
+        - After the cut, leftovers that are only field labels (_LABEL_ONLY, "주민번호") are
+          dropped; any other leftover keeps the SLM type, so "010-… HIV 양성" keeps
+          "HIV 양성" as SENSITIVE (grade C).
         - Everything else (AEGIS and SLM spans) is merged by type priority (local_ai.slm.PRIORITY).
         """
         from .slm import resolve_overlaps, subtract
         rules = [s for s in found if s['type'] in _RULE_TYPES]
         others = [s for s in found if s['type'] not in _RULE_TYPES]
-        secrets = [r for r in rules if r['type'] in _SECRET_RULE_TYPES]
         # Pseudonym placeholders ([주소_1]) are not data; the SLM tends to re-flag them on re-inspection.
         placeholders = [{'start': m.start(), 'end': m.end()} for m in _PLACEHOLDER.finditer(text)]
-        slm, absorbed = [], set()
+        slm = []
         for span in self._slm.detect(text):
             # A span touching a placeholder is the SLM re-reading already-masked content.
             if any(p['start'] < span['end'] and span['start'] < p['end'] for p in placeholders):
                 continue
-            blockers = secrets
-            if span['type'] not in _GRADE_C_SLM_TYPES:
-                blockers = rules
-            else:
-                for i, r in enumerate(rules):
-                    if r['type'] not in _SECRET_RULE_TYPES and r['start'] < span['end'] and span['start'] < r['end']:
-                        absorbed.add(i)
-                        span = {**span, 'start': min(span['start'], r['start']), 'end': max(span['end'], r['end'])}
-            for part in subtract(span, blockers):
+            pieces = subtract(span, rules)
+            cut = len(pieces) != 1 or (pieces[0]['start'], pieces[0]['end']) != (span['start'], span['end'])
+            for part in pieces:
                 st, en = part['start'], part['end']
                 while st < en and text[st] in _TRIM_CHARS:
                     st += 1
                 while en > st and text[en - 1] in _TRIM_CHARS:
                     en -= 1
-                if en > st:
+                # After a cut, a leftover that is only a field label is not content of its own.
+                if en > st and not (cut and _LABEL_ONLY.fullmatch(_LABEL_STRIP.sub('', text[st:en]))):
                     slm.append({**part, 'start': st, 'end': en})
-        kept_rules = [r for i, r in enumerate(rules) if i not in absorbed]
-        return kept_rules + resolve_overlaps(others + slm)
+        return rules + resolve_overlaps(others + slm)
 
     def _model_detect(self, text: str) -> list[dict]:
         tok, session, np = self._tokenizer, self._session, self._np
