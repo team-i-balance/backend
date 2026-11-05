@@ -50,7 +50,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from app.policy_db import PolicyDatabase
-from app.policy_draft import DraftError, read_draft, require_match, save_draft
+from app.policy_draft import DraftError, read_draft, reject_unsignable, require_match, save_draft
 
 POLICY_PAYLOAD_TYPE = "application/vnd.piiguard.policy+json"
 MODEL_PAYLOAD_TYPE = "application/vnd.piiguard.model+json"
@@ -513,9 +513,11 @@ class PolicyStore:
         with self._db.transaction() as conn:
             return read_draft(conn)
 
-    def save_draft(self, payload: dict, changes: list[dict], *, if_match: str | None, editor: str) -> dict:
+    def save_draft(self, payload: dict, changes: list[dict], *, if_match: str | None, editor: str,
+                   console_state: dict | None = None) -> dict:
         with self._db.transaction(write=True) as conn:
-            return save_draft(conn, payload, changes, if_match=if_match, editor=editor)
+            return save_draft(conn, payload, changes, if_match=if_match, editor=editor,
+                              console_state=console_state)
 
     def publish(self, payload: Optional[dict] = None, *, signer=None, if_match: str | None = None) -> StoredBundle:
         """Sign a payload into a DSSE bundle, bump version, and store it.
@@ -534,6 +536,9 @@ class PolicyStore:
                 if not draft["has_draft"]:
                     raise DraftError(409, "NO_POLICY_DRAFT")
                 payload = draft["payload"]
+            # Both paths: a saved draft or direct body carrying console plaintext
+            # is refused rather than signed (console_state is never read here).
+            reject_unsignable(payload)
             version = self._next_version(conn)
             payload = {**payload, "version": version}
             envelope = signer(payload) if signer else self._sign(conn, payload, POLICY_PAYLOAD_TYPE)
@@ -552,6 +557,7 @@ class PolicyStore:
                  stored.sha256, stored.stored_at, stored.rule_count),
             )
             # Same transaction as the signed bundle: failure leaves the draft intact.
+            # policy_console_state is deliberately kept for the console's reload.
             conn.execute("DELETE FROM policy_draft WHERE singleton = 1")
             return stored
 
@@ -639,7 +645,8 @@ class PolicyStore:
         if self._db.path is not None:
             raise RuntimeError("reset is only available for in-memory test stores")
         with self._db.transaction(write=True) as conn:
-            for table in ("policy_active", "policy_bundle", "policy_ack", "model_manifest", "policy_draft"):
+            for table in ("policy_active", "policy_bundle", "policy_ack", "model_manifest", "policy_draft",
+                          "policy_console_state"):
                 conn.execute(f"DELETE FROM {table}")
 
 

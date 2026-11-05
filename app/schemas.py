@@ -204,6 +204,8 @@ class ExportResult(BaseModel):
     exported: int
     file: str
     public_key_fingerprint: str
+    # Last exported event ID when more rows match; pass back as ?cursor=.
+    next_cursor: Optional[int] = None
 
 
 # --- Process / decide flow (local_ai on the in-house server) -----------------

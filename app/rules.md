@@ -164,12 +164,22 @@ PC 측:
 | Method | Path | 설명 |
 | --- | --- | --- |
 | POST | `/policy/publish` | payload를 받아 version+1 → 서명 → 저장. 응답 `{version, keyid, bundle_sha256}` |
-| GET | `/policy/latest` | 최신 번들 봉투. `ETag`=bundle sha256, 같으면 304 |
+| GET | `/policy/latest` | 최신 번들 봉투. `ETag`=`"sha256:…"`(따옴표 포함), `If-None-Match`가 맞으면 304 |
 | GET | `/policy/{version}` | 특정 버전 봉투(감사·재현) |
 | POST | `/policy/ack` | PC 적용 결과 보고 `{device_id, version, status, reason?}` |
 | GET | `/policy/acks` | 적용/거부 집계(기기수·applied·rejected·사유별) |
 | POST | `/policy/model/publish` | 모델 매니페스트 `{name, version, sha256, url}` 서명·저장 |
 | GET | `/policy/model/latest` | 최신 모델 매니페스트 봉투(payloadType `...model+json`) |
+
+`/policy/latest`의 ETag (이슈 #50):
+
+- 응답 헤더는 RFC 9110 형식의 강한 ETag로 **큰따옴표를 포함**한다. 예: `ETag: "sha256:3f…"`.
+  초안 ETag(`/policy/draft`)와 같은 모양이지만 값은 별개다.
+- 헤더만 바뀌었다. `/policy/history`의 `sha256`, `/policy/publish`의 `bundle_sha256` 같은
+  **본문 값은 그대로 따옴표 없는** `sha256:…`이다.
+- `If-None-Match`는 약한 비교로 판단한다. 아래 중 하나라도 현재 번들과 맞으면 `304`:
+  따옴표 있는 값, 따옴표 없는 값(기존 클라이언트 호환), `W/` 접두사, 콤마로 나열한 여러 값, `*`.
+- 비교 함수는 `app/etag.py`. 초안 `If-Match`는 여전히 정확히 한 개의 강한 ETag만 허용한다.
 
 ### 실제 변환 적용 (S7 → S2 되먹임)
 

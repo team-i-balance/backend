@@ -94,10 +94,38 @@ for (;;) {
 고정 DB 스냅샷은 아니므로 사유 제출 등으로 필터 조건이 바뀐 이벤트는 최신 상태를 따릅니다.
 집계 숫자에는 `/logs/stats`를, 상세 행을 탐색할 때는 페이지 넘김을 사용하세요.
 
+## 암호화 내보내기 페이지 넘김
+
+`POST /logs/export`는 쿼리로 `queue`, `start`, `end`, `limit`, `include_test`, `cursor`를 받습니다.
+`start`/`end` 규칙과 `cursor` 의미는 위의 `/logs/events`와 같습니다(ID 내림차순, `id < cursor`).
+`limit`은 기존처럼 기본 1,000·최대 10,000입니다. 이전 요청(쿼리 없이 호출, `limit`만 지정)은 그대로 동작합니다.
+
+```http
+POST /logs/export?start=2026-11-01T00:00:00Z&end=2026-11-05T23:59:59Z&limit=10000
+POST /logs/export?start=2026-11-01T00:00:00Z&end=2026-11-05T23:59:59Z&limit=10000&cursor=48211
+```
+
+```json
+{
+  "exported": 10000,
+  "file": "exports/logs_20261105T090000_123456_ab12cd34.enc.json",
+  "public_key_fingerprint": "…",
+  "next_cursor": 48211
+}
+```
+
+- 조건에 맞는 행이 더 있으면 `next_cursor`는 이번 파일의 마지막(가장 작은) 이벤트 ID입니다.
+  같은 필터에 `cursor=<next_cursor>`를 붙여 다시 호출하면 다음 파일을 만듭니다.
+- 마지막 페이지(남은 행이 `limit` 이하)이면 `next_cursor`는 `null`입니다.
+- 한 요청은 파일 하나를 만듭니다. 기간 전체를 받으려면 `next_cursor`가 `null`이 될 때까지 반복하세요.
+- 잘못된 날짜·`start > end`는 `400`, 범위를 벗어난 `limit`·`cursor`는 `422`입니다.
+- 응답 JSON에 `next_cursor` 필드만 추가됐습니다. **암호화 파일 형식(봉투 필드, 복호화 결과가
+  이벤트 배열인 점)은 바뀌지 않았습니다.** 각 파일의 `record_count`는 그 페이지의 행 수입니다.
+
 ## 검증
 
 ```bash
-python -m pytest tests/test_stats.py tests/test_log_stats_period.py tests/test_crud_filters.py -q
+python -m pytest tests/test_stats.py tests/test_log_stats_period.py tests/test_crud_filters.py tests/test_issue50_etag_export.py -q
 python -m pytest tests/test_event_policy_version.py -q
 python -m pytest -q
 ```
