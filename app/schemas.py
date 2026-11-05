@@ -89,3 +89,52 @@ class ExportResult(BaseModel):
     exported: int
     file: str
     public_key_fingerprint: str
+
+
+# --- Process / decide flow (local_ai on the in-house server) -----------------
+
+
+class ProcessIn(BaseModel):
+    """Raw text the client sends for on-server detection + pseudonymization.
+
+    The server (in-house) runs local_ai on this text. The raw text is used only
+    in memory; it is never written to disk, logged, or stored in an event.
+    """
+
+    text: str = Field(min_length=1)
+    # rules_only = phone/email rules only (name/address NOT checked).
+    # Full model mode requires a local model dir configured on the server.
+    rules_only: bool = False
+
+
+class ProcessOut(BaseModel):
+    """Result of /process. Contains the masked text, never the original."""
+
+    work_id: str
+    masked_text: str
+    detected_types: list[str]
+    detected_count: int
+    grade: str
+    # high  = checked thoroughly (AI model + rules)
+    # low   = checked loosely (rules only; names/addresses not inspected)
+    detection_confidence: str
+    # Re-scan findings on the masked text (possible leftover / false positives).
+    remaining_count: int
+
+
+class DecideIn(BaseModel):
+    """The user's choice for a previously processed work item."""
+
+    work_id: str
+    action: Action
+    reason: Optional[Reason] = None
+
+
+class DecideOut(BaseModel):
+    """Outcome of a decision: the logged event plus any text to actually send."""
+
+    event: EventOut
+    # Text the client should send onward, depending on the action:
+    #   send_transformed -> masked text; send_as_is/revert_original -> original.
+    # cancel -> null (nothing is sent).
+    outgoing_text: Optional[str]

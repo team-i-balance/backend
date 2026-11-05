@@ -70,3 +70,33 @@
   (SHA-256) 만 남긴다.
 - 사전 경고 로그는 **민감정보 유형과 건수만** 남긴다 (`detected_types`,
   `detected_count`).
+
+## 7. 등급 판정 (흐름도 S2) — local_ai 탐지 결과 → 등급
+
+서버(사내)에서 local_ai로 탐지한 유형을 보고 등급을 정한다.
+
+| 조건 | 등급 |
+| --- | --- |
+| 비밀정보 유형이 하나라도 있음 (`API_KEY`, `ACCESS_TOKEN`, `PASSWORD`) | **기밀 C** (`confidential_C`) |
+| 위가 없고 개인정보 유형이 있음 (`NAME`, `PHONE`, `EMAIL`, `ADDRESS`, `ID`/`ID_NUMBER`, `ACCOUNT`, `CARD`, `DOB`, `USERNAME`, `IP_ADDRESS`, `BUSINESS_NUMBER`) | **민감 S** (`sensitive_S`) |
+| 아무것도 탐지되지 않음 | **공개 O** (`public_O`) |
+
+비밀정보가 있으면 전체를 기밀로 본다(가장 높은 민감도 우선).
+
+## 8. 탐지 신뢰도 매핑 (coverage → detection_confidence)
+
+local_ai의 `coverage`를 로그의 `detection_confidence`로 바꾼다.
+
+| local_ai coverage | confidence | 쉬운 설명 |
+| --- | --- | --- |
+| `model_and_rules` | `high` | 꼼꼼히 검사함 (AI 모델 + 규칙) |
+| `rules_only_incomplete` | `low` | 대충만 검사함 (전화·이메일 규칙만, 이름·주소 못 봄) |
+
+## 9. 서버 처리 원칙 (/process, /decide)
+
+- 처리는 **사내 서버**에서 수행한다. 원문 텍스트는 **메모리에서만** 쓰고
+  디스크 저장·로그 기록을 하지 않는다.
+- 로그 이벤트에는 원문/가명문 본문을 넣지 않는다. 원문의 SHA-256 해시
+  (`content_hash`)와 유형·건수·등급만 남긴다.
+- 복원용 가명 매핑(`work_id` 단위)은 메모리에 잠시 보관하고 TTL 만료 또는
+  `/decide` 처리 후 폐기한다.

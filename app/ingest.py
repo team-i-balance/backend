@@ -1,0 +1,67 @@
+"""Bridge: turn a processed work item + user decision into a log EventIn.
+
+Keeps the logging module's rule intact: no raw/masked body text is placed in
+the event, only metadata (types, count, grade, confidence) plus a SHA-256
+hash of the original for correlation. See rules.md section 6.
+"""
+from __future__ import annotations
+
+import hashlib
+from typing import Optional
+
+from app.schemas import (
+    Action,
+    Confidence,
+    EventIn,
+    Grade,
+    Reason,
+)
+
+# coverage (from local_ai) -> detection_confidence
+#   model_and_rules        -> high (checked thoroughly: AI model + rules)
+#   rules_only_incomplete  -> low  (checked loosely: rules only)
+_COVERAGE_TO_CONFIDENCE = {
+    "model_and_rules": Confidence.high,
+    "rules_only_incomplete": Confidence.low,
+}
+
+
+def coverage_to_confidence(coverage: str) -> Confidence:
+    return _COVERAGE_TO_CONFIDENCE.get(coverage, Confidence.medium)
+
+
+def hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def build_event(
+    *,
+    work_id: str,
+    original_text: str,
+    detected_types,
+    detected_count: int,
+    grade: Grade,
+    detection_confidence: Confidence,
+    action: Action,
+    reason: Optional[Reason],
+) -> EventIn:
+    """Construct the EventIn for a user's decision on a processed item.
+
+    reverted  = user rolled back to the original (revert_original)
+    restored  = masked text was sent and the AI reply will have originals
+                restored, i.e. the send_transformed path.
+    """
+    reverted = action == Action.revert_original
+    restored = action == Action.send_transformed
+    return EventIn(
+        request_id=work_id,
+        grade=grade,
+        action=action,
+        reason=reason,
+        detection_confidence=detection_confidence,
+        detected_types=sorted(set(detected_types)),
+        detected_count=detected_count,
+        reverted=reverted,
+        restored=restored,
+        content_hash=hash_text(original_text),
+    )
