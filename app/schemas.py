@@ -5,7 +5,7 @@ Enum values mirror app/rules.md (the temporary in-house classification rules).
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Grade(str, Enum):
@@ -134,6 +134,17 @@ class ProcessIn(BaseModel):
     # rules_only = phone/email rules only (name/address NOT checked).
     # Full model mode requires a local model dir configured on the server.
     rules_only: bool = False
+    # A READY file work this question goes out with (issue #29). Its placeholders
+    # are numbered in that file's mapping, so one placeholder never stands for two
+    # values, and either restore covers both. The file is checked with the model,
+    # so a linked question is too: rules_only must stay false.
+    file_work_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _linked_question_uses_full_detection(self):
+        if self.file_work_id is not None and self.rules_only:
+            raise ValueError("file_work_id requires full detection (rules_only=false)")
+        return self
 
 
 class ProcessOut(BaseModel):

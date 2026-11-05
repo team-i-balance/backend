@@ -8,12 +8,13 @@ import threading
 import time
 from typing import TYPE_CHECKING, NamedTuple
 
+from app.file_mapping import BorrowedMapping, MappingClosed, SharedMapping
 from app.file_schemas import FileSummary
 from app.schemas import Action, Grade
 
 if TYPE_CHECKING:
     from app.file_events import FileEvent
-    from local_ai.pipeline import LocalSession
+    from local_ai.pseudonym import RestoreResult
 
 
 class FileStoreFull(RuntimeError):
@@ -24,7 +25,7 @@ class FileStoreFull(RuntimeError):
 class FileWorkItem:
     work_id: str
     file_bytes: bytes = field(repr=False)
-    session: LocalSession = field(repr=False)
+    session: SharedMapping = field(repr=False)
     grade: Grade
     summary: FileSummary
     expires_at: datetime
@@ -49,6 +50,9 @@ class FileWorkStore:
     """add transfers ownership on success; take transfers it to the caller.
 
     take_download consumes only the file bytes, leaving the session until expiry.
+    restore and lend use the mapping in place, any number of times until expiry,
+    and never extend it. Ending a work never waits for a restore or linked
+    question using its mapping: that use closes the mapping when it finishes.
     take is internal, not an authorization check. A future AI route must check
     access before taking a work item, and close it in finally after use.
     on_expired receives the event of each work that expired before its copy was
@@ -82,7 +86,7 @@ class FileWorkStore:
             if work_id in self._items:
                 raise ValueError("duplicate file work ID")
             item = FileWorkItem(
-                work_id, file_bytes, session, grade, summary,
+                work_id, file_bytes, SharedMapping(session), grade, summary,
                 datetime.now(timezone.utc) + timedelta(seconds=self._ttl),
                 time.monotonic() + self._ttl, event=event,
             )
@@ -108,6 +112,25 @@ class FileWorkStore:
             item.file_bytes = b""
             self._bytes -= len(data)
             return Download(data, item.event)
+
+    def restore(self, work_id: str, text: str) -> RestoreResult | None:
+        """Restore an AI reply with the work's mapping; None if the work is gone."""
+        with self._lock:
+            self._purge_locked()
+            item = self._items.get(work_id)
+        if item is None:
+            return None
+        try:
+            return item.session.restore(text)  # Outside the lock: it may wait its turn.
+        except MappingClosed:
+            return None  # The work ended between the lookup and the restore.
+
+    def lend(self, work_id: str) -> BorrowedMapping | None:
+        """Let a linked question number its placeholders in the work's mapping."""
+        with self._lock:
+            self._purge_locked()
+            item = self._items.get(work_id)
+            return None if item is None else item.session.borrow()
 
     def discard(self, work_id: str) -> None:
         with self._lock:

@@ -46,3 +46,9 @@ class FileResult(BaseModel):
         default=None,
         description="BLOCKED only: the types that made the file confidential.",
     )
+
+
+class FileRestoreIn(BaseModel):
+    """An AI reply whose placeholders a file work's mapping should restore."""
+
+    text: str = Field(max_length=200_000)
