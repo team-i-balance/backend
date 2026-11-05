@@ -14,6 +14,15 @@ Model files are never downloaded at runtime; pass a local folder.
 """
 from __future__ import annotations
 
+import os
+
+# Models load from a local folder only and are never downloaded at runtime. Set offline mode before
+# gliner/transformers/huggingface_hub are imported so a library upgrade cannot start network calls.
+# setdefault keeps values the operator set explicitly.
+for _key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY"):
+    os.environ.setdefault(_key, "1")
+del _key
+
 import json
 import re
 from pathlib import Path
