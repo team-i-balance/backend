@@ -10,6 +10,7 @@ import json
 import re
 from pathlib import Path
 from .additional_rules import detect_additional
+from .kr_rules import kr_structured_detections
 from .preprocessing import normalize_for_detection, restore_detection_offsets
 
 _PHONE = re.compile(r'(?<![0-9])01[016789][ -]?[0-9]{3,4}[ -]?[0-9]{4}(?![0-9])')
@@ -66,6 +67,7 @@ def _structured_detections(text: str) -> list[dict]:
         if not _PLACEHOLDER.fullmatch(value):
             found.append({'start': match.start('value'), 'end': match.end('value'), 'type': 'ACCESS_TOKEN'})
     found.extend(detect_additional(text, found))
+    found.extend(kr_structured_detections(text, found))
     for match in _PROVIDER_API_KEY.finditer(text):
         if not any(x['type'] in ('API_KEY', 'ACCESS_TOKEN', 'PASSWORD') and x['start'] <= match.start() and x['end'] >= match.end() for x in found):
             found.append({'start': match.start(), 'end': match.end(), 'type': 'API_KEY'})
@@ -85,8 +87,9 @@ _TYPES = {
 
 # Types produced by regex/structured rules; they keep their extent when the SLM overlaps them
 # (see Detector._add_slm_spans for the grade-C exception).
-_RULE_TYPES = frozenset({'PHONE', 'EMAIL', 'BUSINESS_NUMBER', 'API_KEY', 'ACCESS_TOKEN'})
-_SECRET_RULE_TYPES = frozenset({'API_KEY', 'ACCESS_TOKEN'})
+_RULE_TYPES = frozenset({'PHONE', 'EMAIL', 'BUSINESS_NUMBER', 'API_KEY', 'ACCESS_TOKEN',
+                         'ID_NUMBER', 'CARD', 'ACCOUNT', 'IP_ADDRESS', 'PASSWORD', 'DOB'})
+_SECRET_RULE_TYPES = frozenset({'API_KEY', 'ACCESS_TOKEN', 'PASSWORD'})
 _GRADE_C_SLM_TYPES = frozenset({'CONFIDENTIAL', 'SENSITIVE'})
 # Left at SLM span edges after cutting around rule spans.
 _TRIM_CHARS = frozenset(' \t\r\n,.;:/·()[]')
