@@ -89,8 +89,8 @@ _TYPES = {
 # (see Detector._add_slm_spans for the grade-C exception).
 _RULE_TYPES = frozenset({'PHONE', 'EMAIL', 'BUSINESS_NUMBER', 'API_KEY', 'ACCESS_TOKEN',
                          'ID_NUMBER', 'CARD', 'ACCOUNT', 'IP_ADDRESS', 'PASSWORD', 'DOB'})
-_SECRET_RULE_TYPES = frozenset({'API_KEY', 'ACCESS_TOKEN', 'PASSWORD'})
-_GRADE_C_SLM_TYPES = frozenset({'CONFIDENTIAL', 'SENSITIVE'})
+# Fraction of an SLM span that must remain after cutting out rule-engine spans for it to be kept.
+_SLM_KEEP_RATIO = 0.5
 # Left at SLM span edges after cutting around rule spans.
 _TRIM_CHARS = frozenset(' \t\r\n,.;:/·()[]')
 
@@ -211,41 +211,38 @@ class Detector:
     def _add_slm_spans(self, text: str, found: list[dict]) -> list[dict]:
         """Add SLM spans without cross-type overlaps (which pseudonymization rejects).
 
-        - Secret rule spans (API key, token) always keep their extent; SLM spans are cut around them.
-        - Other rule spans (phone, email, business number) keep their extent too, unless a
-          grade-C SLM span (CONFIDENTIAL / SENSITIVE) covers them: then the SLM span absorbs
-          them so the policy grade is not lost.
+        - Rule-engine spans (keys, passwords, phone, email, resident/card/account numbers, IP,
+          birth dates) always keep their extent and type: checksums and formats are more
+          reliable than the SLM, which tends to mislabel such numbers (e.g. a resident number
+          as an address or a card number as an internal host). SLM spans are cut around them.
+        - An SLM span that was mostly such a value (less than _SLM_KEEP_RATIO left after the
+          cut) is dropped, so its leftover label words ("주민번호") do not get their own type.
         - Everything else (AEGIS and SLM spans) is merged by type priority (local_ai.slm.PRIORITY).
         """
         from .slm import resolve_overlaps, subtract
         rules = [s for s in found if s['type'] in _RULE_TYPES]
         others = [s for s in found if s['type'] not in _RULE_TYPES]
-        secrets = [r for r in rules if r['type'] in _SECRET_RULE_TYPES]
         # Pseudonym placeholders ([주소_1]) are not data; the SLM tends to re-flag them on re-inspection.
         placeholders = [{'start': m.start(), 'end': m.end()} for m in _PLACEHOLDER.finditer(text)]
-        slm, absorbed = [], set()
+        slm = []
         for span in self._slm.detect(text):
             # A span touching a placeholder is the SLM re-reading already-masked content.
             if any(p['start'] < span['end'] and span['start'] < p['end'] for p in placeholders):
                 continue
-            blockers = secrets
-            if span['type'] not in _GRADE_C_SLM_TYPES:
-                blockers = rules
-            else:
-                for i, r in enumerate(rules):
-                    if r['type'] not in _SECRET_RULE_TYPES and r['start'] < span['end'] and span['start'] < r['end']:
-                        absorbed.add(i)
-                        span = {**span, 'start': min(span['start'], r['start']), 'end': max(span['end'], r['end'])}
-            for part in subtract(span, blockers):
+            parts = []
+            for part in subtract(span, rules):
                 st, en = part['start'], part['end']
                 while st < en and text[st] in _TRIM_CHARS:
                     st += 1
                 while en > st and text[en - 1] in _TRIM_CHARS:
                     en -= 1
                 if en > st:
-                    slm.append({**part, 'start': st, 'end': en})
-        kept_rules = [r for i, r in enumerate(rules) if i not in absorbed]
-        return kept_rules + resolve_overlaps(others + slm)
+                    parts.append({**part, 'start': st, 'end': en})
+            kept = sum(p['end'] - p['start'] for p in parts)
+            if kept < _SLM_KEEP_RATIO * (span['end'] - span['start']):
+                continue
+            slm.extend(parts)
+        return rules + resolve_overlaps(others + slm)
 
     def _model_detect(self, text: str) -> list[dict]:
         tok, session, np = self._tokenizer, self._session, self._np

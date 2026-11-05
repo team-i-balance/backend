@@ -61,11 +61,35 @@ class SlmAdapterTests(unittest.TestCase):
         self.assertEqual(decide_grade(r.detection_types), Grade.sensitive)
         self.assertEqual(r.coverage, 'model_and_rules')
 
-    def test_grade_c_slm_span_absorbs_phone(self):
+    def test_rule_value_keeps_type_when_slm_mislabels_it(self):
+        # Real v2 SLM outputs: a phone flagged as an internal host (R10), a resident number
+        # flagged as an address / sensitive fact, a card number flagged as R10.
         text = '010-1234-5678'
         with LocalSession(detector_with([(text, 'CONFIDENTIAL', 'R10')])) as s:
             r = s.process(text)
-        self.assertEqual(r.text, '[기밀_1]')
+        self.assertEqual(r.text, '[전화번호_1]')
+        self.assertEqual(decide_grade(r.detection_types), Grade.sensitive)
+
+    def test_resident_and_card_numbers_not_swallowed_by_slm(self):
+        text = '김민지 고객 주민번호 900101-1234568, 카드 4111 1111 1111 1111로 결제했어'
+        spans = [('김민지', 'NAME', 'P-NAME'), ('주민번호 900101-1234568', 'SENSITIVE', 'P-SENS'),
+                 ('카드 4111 1111 1111 1111', 'SENSITIVE', 'P-SENS')]
+        with LocalSession(detector_with(spans)) as s:
+            r = s.process(text)
+        self.assertNotIn('900101-1234568', r.text)
+        self.assertNotIn('4111', r.text)
+        self.assertIn('주민번호', r.text)       # leftover label words are not masked as their own type
+        self.assertNotIn('SENSITIVE', r.detection_types)
+        self.assertEqual(decide_grade(r.detection_types), Grade.sensitive)
+        self.assertEqual(r.remaining, ())
+
+    def test_slm_span_mostly_outside_rule_value_is_kept(self):
+        text = '거래처 다온물산 담당 010-1234-5678 번으로 계약 단가 15% 인하 통보'
+        spans = [('다온물산 담당 010-1234-5678 번으로 계약 단가 15% 인하', 'CONFIDENTIAL', 'R05')]
+        with LocalSession(detector_with(spans)) as s:
+            r = s.process(text)
+        self.assertIn('[전화번호_1]', r.text)
+        self.assertNotIn('계약 단가 15% 인하', r.text)
         self.assertEqual(decide_grade(r.detection_types), Grade.confidential)
 
     def test_secret_keeps_grade_and_no_restore(self):
