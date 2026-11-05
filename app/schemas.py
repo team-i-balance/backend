@@ -107,7 +107,9 @@ class EventIn(BaseModel):
     # Policy version the client applied to this input (/policy/current's
     # version), issue #49. Server-built events (/process/decide, file events)
     # set the server's active version. Null = unknown / no active policy.
-    policy_version: Optional[int] = Field(default=None, ge=0)
+    # Any integer: the policy subsystem can activate any integer version, and
+    # a server-built event must never fail validation after work is consumed.
+    policy_version: Optional[int] = None
 
     # --- Context fields (issue #21) ------------------------------------------
     # Identifiers for the submitting employee and channel. All optional to

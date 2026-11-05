@@ -14,7 +14,7 @@ import hashlib
 from typing import Optional
 
 from app import crud
-from app.ingest import active_policy_version, coverage_to_confidence
+from app.ingest import coverage_to_confidence
 from app.schemas import Action, Confidence, EventIn, Grade, Source
 
 
@@ -28,11 +28,12 @@ class FileEvent:
     detected_count: int
     detection_confidence: Confidence
     content_hash: str  # SHA-256 of the uploaded file bytes
-    # Server's active policy version when the file was checked (issue #49).
+    # Policy version applied to the detector when the file was checked (#49).
     policy_version: Optional[int] = None
 
     @classmethod
-    def of(cls, *, work_id: str, grade: Grade, findings, data: bytes, model_enabled: bool):
+    def of(cls, *, work_id: str, grade: Grade, findings, data: bytes, model_enabled: bool,
+           policy_version: Optional[int] = None):
         return cls(
             work_id=work_id,
             grade=grade,
@@ -42,7 +43,7 @@ class FileEvent:
                 "model_and_rules" if model_enabled else "rules_only_incomplete"
             ),
             content_hash=hashlib.sha256(data).hexdigest(),
-            policy_version=active_policy_version(),
+            policy_version=policy_version,
         )
 
 

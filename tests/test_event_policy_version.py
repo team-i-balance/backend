@@ -39,9 +39,28 @@ def test_policy_version_is_optional_and_null_when_missing(client):
     assert case["event"]["policy_version"] is None
 
 
-@pytest.mark.parametrize("bad", [-1, "v12", 1.5])
+@pytest.mark.parametrize("bad", ["v12", 1.5])
 def test_invalid_policy_version_is_rejected(client, bad):
     assert client.post("/logs/events", json={**BASE, "policy_version": bad}).status_code == 422
+
+
+def test_every_deployable_version_can_be_logged(api):
+    # The verifier accepts any integer newer than the last one, including a
+    # negative first version; server-built events must still be stored.
+    deploy(api.client, -1)
+    assert client_version(api.client, -1)
+    work = api.client.post("/process", json={"text": "010-1234-5678", "rules_only": True}).json()
+    decided = api.client.post("/process/decide", json={"work_id": work["work_id"], "action": "cancel"})
+    assert decided.status_code == 200 and decided.json()["event"]["policy_version"] == -1
+    ready = upload(api, workbook_bytes()).json()
+    assert api.client.get(f"/files/{ready['work_id']}/download").status_code == 200
+    assert [e["policy_version"] for e in api.client.get("/logs/events").json()] == [-1, -1, -1]
+    assert stats(api.client)["by_policy_version"] == {"-1": 3}
+
+
+def client_version(client, version):
+    return client.post("/logs/events", json={**BASE, "policy_version": version}).json()[
+        "policy_version"] == version
 
 
 # --- server-built events -----------------------------------------------------
@@ -83,6 +102,40 @@ def test_file_events_record_the_server_policy_version(api):
     files = [(e["action"], e["policy_version"])
              for e in api.client.get("/logs/events").json() if e["source"] == "file"]
     assert files == [("cancel", 8), ("send_transformed", 7)]
+
+
+def _with_phone(book):
+    book.active["E3"] = "010-1234-5678"
+
+
+def test_file_is_checked_under_the_policy_it_is_logged_with(api):
+    phone_off = _bundle(_payload(types={"전화번호": {"on": False}}, version=5))
+    assert api.client.post("/policy/deploy", json={"bundle": phone_off}).json()["accepted"]
+    # No /process call first: the file path itself must apply the policy.
+    body = upload(api, workbook_bytes(_with_phone)).json()
+    assert body["status"] == "READY"
+    assert "PHONE" not in body["detected_types"]
+    assert api.client.get(f"/files/{body['work_id']}/download").status_code == 200
+    [event] = api.client.get("/logs/events").json()
+    assert event["policy_version"] == 5 and "PHONE" not in event["detected_types"]
+
+
+def test_file_keeps_the_version_snapshotted_before_a_concurrent_deploy(api, monkeypatch):
+    deploy(api.client, 1)
+    real = api.service.sanitize_xlsx
+
+    def deploy_while_sanitizing(*args, **kwargs):
+        result = real(*args, **kwargs)
+        phone_off = _bundle(_payload(types={"전화번호": {"on": False}}, version=2))
+        assert api.client.post("/policy/deploy", json={"bundle": phone_off}).json()["accepted"]
+        return result
+
+    monkeypatch.setattr(api.service, "sanitize_xlsx", deploy_while_sanitizing)
+    body = upload(api, workbook_bytes(_with_phone)).json()
+    assert "PHONE" in body["detected_types"]  # Checked under version 1.
+    assert api.client.get(f"/files/{body['work_id']}/download").status_code == 200
+    [event] = api.client.get("/logs/events").json()
+    assert event["policy_version"] == 1
 
 
 # --- stats -------------------------------------------------------------------

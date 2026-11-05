@@ -31,14 +31,6 @@ def coverage_to_confidence(coverage: str) -> Confidence:
     return _COVERAGE_TO_CONFIDENCE.get(coverage, Confidence.medium)
 
 
-def active_policy_version() -> Optional[int]:
-    """Version of the policy the server has active now, or None (read-only, #49)."""
-    from app.policy import store as policy_store
-
-    active = policy_store.current()
-    return active.version if active is not None else None
-
-
 def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 

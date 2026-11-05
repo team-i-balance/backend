@@ -52,10 +52,12 @@ GET /logs/stats?start=2026-11-01T00:00:00Z&end=2026-11-05T09:00:00Z
 이벤트에 그 입력을 처리할 때 적용 중이던 정책 버전 `policy_version`(정수 또는 `null`)을 기록합니다.
 
 - `POST /logs/events`: PC가 적용 중인 정책 버전(`GET /policy/current`의 `version`)을 보냅니다.
-  선택 필드이며 생략하거나 `null`이면 `null`로 저장합니다. 0 이상의 정수만 받고, 그 밖의 값은 `422`입니다.
+  선택 필드이며 생략하거나 `null`이면 `null`로 저장합니다. 정책 배포가 받아들이는 모든 정수 버전을 받고,
+  정수가 아닌 값(문자열·소수)은 `422`입니다.
 - `POST /process/decide`: 서버가 `/process` 때 탐지에 적용한 활성 정책 버전(`/policy/current`의 `version`)을
   기록합니다. `/process`와 `decide` 사이에 새 정책이 배포되어도 탐지 당시 버전을 유지합니다.
-- 파일 이벤트(`source: "file"`): 파일을 검사한 시점의 서버 활성 정책 버전을 기록합니다.
+- 파일 이벤트(`source: "file"`): 검사를 시작할 때 활성 정책을 한 번 고정해 탐지기에 적용하고 그 버전을 기록합니다.
+  검사 도중 새 정책이 배포되어도 검사에 쓴 버전이 남습니다.
 - 활성 정책이 없을 때와 이 필드가 생기기 전의 이벤트는 `null`입니다. 서버 시작 시 기존 DB에
   `policy_version` 열(INTEGER, NULL 허용)을 추가하며 기존 행은 채우지 않습니다.
 - `/logs/events`, `/cases`의 `event`, `/process/decide`의 `event`에 저장된 값을 그대로 반환합니다.

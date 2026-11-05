@@ -9,6 +9,8 @@ from app.file_events import FileEvent
 from app.file_schemas import FileResult, FileSummary
 from app.file_store import FileStoreFull, FileWorkStore
 from app.grading import decide_grade
+from app.policy import store as policy_store
+from app.policy_apply import apply_policy_to_detector
 from app.schemas import Action, Grade
 from file_sanitizer import LocalPIIProcessor, sanitize_xlsx
 from file_sanitizer.local_pii import Findings
@@ -90,6 +92,11 @@ class FileProcessingJob:
             except Exception:
                 return self.failure(503, "MODEL_UNAVAILABLE")
 
+            # Snapshot the active policy once, apply it to the detector before
+            # checking, and log that same version (#49): a deploy during a long
+            # upload must not relabel the result.
+            policy = policy_store.current()
+            apply_policy_to_detector(detector, policy)
             session = LocalSession(detector)
             processor = LocalPIIProcessor(session, classify=classify_file_types)
             result = sanitize_xlsx(data, self.work_id, processor, filename=filename)
@@ -101,6 +108,7 @@ class FileProcessingJob:
                 work_id=self.work_id, grade=_GRADES[result.grade],
                 findings=processor.findings, data=data,
                 model_enabled=detector.model_enabled,
+                policy_version=policy.version if policy is not None else None,
             )
             if blocked:
                 # Like /process/decide, answer only once the event is stored (#32).
