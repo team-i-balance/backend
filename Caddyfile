@@ -1,0 +1,12 @@
+# iBalance backend — TLS termination with a self-signed cert for the server IP.
+# No domain is available, so we serve HTTPS on :443 with a self-signed cert
+# whose SAN is the public IP. Browsers warn (untrusted CA); transport is
+# encrypted. uvicorn runs on 127.0.0.1:8501 and is not exposed directly.
+{
+	auto_https off
+}
+
+:443 {
+	tls /etc/caddy/selfsigned/cert.pem /etc/caddy/selfsigned/key.pem
+	reverse_proxy 127.0.0.1:8501
+}
