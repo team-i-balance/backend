@@ -77,6 +77,66 @@ def test_discard_swallows_close_errors():
     assert store.get(item.work_id) is None
 
 
+def test_background_sweeper_expires_without_other_calls():
+    # Regression (P2-E): an abandoned item must be discarded by the sweeper
+    # even if no further add/get/pop happens.
+    store = SessionStore(ttl_seconds=0, sweep_interval=0.02)
+    item = _add(store)
+    store.start_sweeper()
+    try:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if item.session.closed:
+                break
+            time.sleep(0.02)
+        assert item.session.closed is True
+        assert len(store) == 0
+    finally:
+        store.stop_sweeper()
+
+
+def test_start_sweeper_is_idempotent():
+    store = SessionStore(sweep_interval=0.05)
+    store.start_sweeper()
+    first = store._sweeper
+    store.start_sweeper()  # must not start a second thread
+    assert store._sweeper is first
+    store.stop_sweeper()
+
+
+def test_put_reinserts_existing_item():
+    store = SessionStore()
+    item = _add(store)
+    popped = store.pop(item.work_id)
+    store.put(popped)
+    assert store.get(item.work_id) is popped
+
+
+def test_put_evicts_oldest_when_full():
+    store = SessionStore(max_items=1)
+    first = _add(store)
+    # Build a second, distinct item and put() it while at capacity.
+    import time as _t
+    from app.sessions import WorkItem
+
+    second = WorkItem(
+        work_id="second",
+        session=FakeSession(),
+        original_text="o",
+        masked_text="m",
+        detected_types=("NAME",),
+        detected_count=1,
+        grade="sensitive_S",
+        detection_confidence="low",
+        remaining_count=0,
+        created_at=_t.monotonic() + 1,
+    )
+    store.put(second)
+    assert store.get(first.work_id) is None  # oldest evicted
+    assert first.session.closed is True
+    assert store.get("second") is second
+
+
 def test_capacity_evicts_oldest():
     store = SessionStore(max_items=3)
     items = [_add(store) for _ in range(3)]

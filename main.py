@@ -11,7 +11,13 @@ from app.process_router import router as process_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    yield
+    from app.sessions import store
+
+    store.start_sweeper()
+    try:
+        yield
+    finally:
+        store.stop_sweeper()
 
 
 app = FastAPI(title="iBalance Backend", version="0.1.0", lifespan=lifespan)

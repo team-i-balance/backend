@@ -6,7 +6,8 @@ Each /process call creates a WorkItem holding:
   - the detection metadata used to build the log event on /decide.
 
 Items expire after a TTL and are also capped in count so memory can't grow
-unbounded. Nothing here is written to disk or logged.
+unbounded. A background sweeper discards expired items even if no further
+store call arrives. Nothing here is written to disk or logged.
 """
 from __future__ import annotations
 
@@ -20,6 +21,8 @@ from typing import Optional
 DEFAULT_TTL_SECONDS = 600  # 10 minutes
 # Hard cap on concurrently stored items (oldest evicted first).
 MAX_ITEMS = 1000
+# How often the background sweeper runs.
+SWEEP_INTERVAL_SECONDS = 60
 
 
 @dataclass
@@ -29,7 +32,7 @@ class WorkItem:
     original_text: str
     masked_text: str
     detected_types: tuple[str, ...]
-    detected_count: int
+    detected_count: int  # number of detected spans (not distinct types)
     grade: str
     detection_confidence: str
     remaining_count: int
@@ -37,12 +40,45 @@ class WorkItem:
 
 
 class SessionStore:
-    def __init__(self, ttl_seconds: int = DEFAULT_TTL_SECONDS, max_items: int = MAX_ITEMS):
+    def __init__(
+        self,
+        ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        max_items: int = MAX_ITEMS,
+        sweep_interval: float = SWEEP_INTERVAL_SECONDS,
+    ):
         self._ttl = ttl_seconds
         self._max = max_items
         self._items: dict[str, WorkItem] = {}
         self._lock = threading.Lock()
+        self._sweeper: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._sweep_interval = sweep_interval
 
+    # --- background expiry ---------------------------------------------------
+    def start_sweeper(self) -> None:
+        """Start a daemon thread that expires items on a timer.
+
+        Safe to call more than once; only one sweeper runs. Idempotent so the
+        app lifespan can call it on startup.
+        """
+        with self._lock:
+            if self._sweeper is not None and self._sweeper.is_alive():
+                return
+            self._stop.clear()
+            self._sweeper = threading.Thread(
+                target=self._sweep_loop, name="session-sweeper", daemon=True
+            )
+            self._sweeper.start()
+
+    def stop_sweeper(self) -> None:
+        self._stop.set()
+
+    def _sweep_loop(self) -> None:
+        while not self._stop.wait(self._sweep_interval):
+            with self._lock:
+                self._purge_expired_locked()
+
+    # --- core store ----------------------------------------------------------
     def _purge_expired_locked(self) -> None:
         now = time.monotonic()
         expired = [k for k, v in self._items.items() if now - v.created_at > self._ttl]
@@ -79,6 +115,19 @@ class SessionStore:
         with self._lock:
             self._purge_expired_locked()
             return self._items.pop(work_id, None)
+
+    def put(self, item: WorkItem) -> None:
+        """Re-insert a previously popped item under its existing work_id.
+
+        Used when /decide keeps a send_transformed session alive for a later
+        /process/restore. Capacity is enforced the same way as add().
+        """
+        with self._lock:
+            self._purge_expired_locked()
+            while len(self._items) >= self._max and item.work_id not in self._items:
+                oldest = min(self._items.values(), key=lambda w: w.created_at)
+                self._discard_locked(oldest.work_id)
+            self._items[item.work_id] = item
 
     def discard(self, work_id: str) -> None:
         with self._lock:

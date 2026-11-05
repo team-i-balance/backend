@@ -101,7 +101,9 @@ class ProcessIn(BaseModel):
     in memory; it is never written to disk, logged, or stored in an event.
     """
 
-    text: str = Field(min_length=1)
+    # Bounded so one request cannot consume unbounded CPU (detection runs twice)
+    # or memory (original + masked text are retained until decide/restore/TTL).
+    text: str = Field(min_length=1, max_length=50_000)
     # rules_only = phone/email rules only (name/address NOT checked).
     # Full model mode requires a local model dir configured on the server.
     rules_only: bool = False
@@ -138,3 +140,22 @@ class DecideOut(BaseModel):
     #   send_transformed -> masked text; send_as_is/revert_original -> original.
     # cancel -> null (nothing is sent).
     outgoing_text: Optional[str]
+    # True only for send_transformed: the work item (pseudonym mapping) is kept
+    # so the client can later call /process/restore on the AI reply. For every
+    # other action the work item is already released.
+    restore_available: bool = False
+
+
+class RestoreIn(BaseModel):
+    """AI reply text whose current-session pseudonyms should be restored."""
+
+    work_id: str
+    text: str = Field(max_length=200_000)
+
+
+class RestoreOut(BaseModel):
+    """Restored reply. Secret placeholders (keys/tokens/passwords) stay masked."""
+
+    text: str
+    unknown: list[str]   # placeholders not from this session (left as-is)
+    blocked: list[str]   # secret placeholders intentionally not restored

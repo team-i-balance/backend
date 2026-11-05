@@ -1,17 +1,30 @@
-"""/process and /decide: run local_ai on the in-house server, then log.
+"""/process, /process/decide, /process/restore.
+
+Runs local_ai on the in-house server, then logs the user's decision.
 
 Flow:
   POST /process {text}  -> server runs local_ai (detect + pseudonymize) and
                            grades the result; returns masked text + metadata
                            and a work_id. Raw text stays in memory only.
-  POST /decide {work_id, action, reason?}
+  POST /process/decide {work_id, action, reason?}
                         -> builds a log event from the stored metadata + the
-                           user's choice, persists it (with queue classification)
-                           and returns the text to actually send onward.
+                           user's choice and persists it (with queue
+                           classification). Returns the text to send onward.
+                           For send_transformed the work item is kept alive so
+                           the AI reply can be de-pseudonymized later.
+  POST /process/restore {work_id, text}
+                        -> restore this session's pseudonyms in an AI reply,
+                           then release the work item.
+
+Detector reuse: constructing a local_ai Detector builds a tokenizer and ONNX
+session, which is expensive and memory-heavy. We build each mode's detector
+once and share it across requests; only the per-work pseudonym state lives in
+the LocalSession.
 """
 from __future__ import annotations
 
 import os
+import threading
 
 from fastapi import APIRouter, HTTPException
 
@@ -26,6 +39,8 @@ from app.schemas import (
     Grade,
     ProcessIn,
     ProcessOut,
+    RestoreIn,
+    RestoreOut,
 )
 from app.sessions import store
 
@@ -34,31 +49,52 @@ MODEL_DIR_ENV = "LOCAL_PII_MODEL_DIR"
 
 router = APIRouter(prefix="/process", tags=["process"])
 
+# Shared detectors, built lazily once per mode and reused across requests.
+_detectors: dict[bool, object] = {}
+_detector_lock = threading.Lock()
 
-def _build_detector(rules_only: bool):
+
+def _get_detector(rules_only: bool):
+    """Return a shared Detector for the given mode, building it once."""
     # Imported lazily so the logging module works even if local_ai's optional
     # model dependencies are absent.
     from local_ai.detector import Detector
 
-    if rules_only:
-        return Detector(None)
-    model_dir = os.getenv(MODEL_DIR_ENV)
-    if not model_dir:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"full detection requires {MODEL_DIR_ENV} to be set on the "
-                "server; use rules_only=true otherwise"
-            ),
-        )
-    return Detector(model_dir)
+    with _detector_lock:
+        cached = _detectors.get(rules_only)
+        if cached is not None:
+            return cached
+
+        if rules_only:
+            detector = Detector(None)
+        else:
+            model_dir = os.getenv(MODEL_DIR_ENV)
+            if not model_dir:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"full detection requires {MODEL_DIR_ENV} to be set on "
+                        "the server; use rules_only=true otherwise"
+                    ),
+                )
+            detector = Detector(model_dir)
+
+        _detectors[rules_only] = detector
+        return detector
+
+
+def _reset_detectors() -> None:
+    """Drop cached detectors (used by tests)."""
+    with _detector_lock:
+        _detectors.clear()
 
 
 @router.post("", response_model=ProcessOut)
 def process_text(body: ProcessIn):
     from local_ai.pipeline import LocalSession
 
-    detector = _build_detector(body.rules_only)
+    detector = _get_detector(body.rules_only)
+    # The pseudonym mapping is per-work; the detector is shared.
     session = LocalSession(detector)
     try:
         result = session.process(body.text)
@@ -78,7 +114,7 @@ def process_text(body: ProcessIn):
         original_text=body.text,
         masked_text=result.text,
         detected_types=tuple(result.detection_types),
-        detected_count=len(result.detection_types),
+        detected_count=result.detection_count,  # span count, not distinct types
         grade=grade.value,
         detection_confidence=confidence.value,
         remaining_count=len(result.remaining),
@@ -88,7 +124,7 @@ def process_text(body: ProcessIn):
         work_id=item.work_id,
         masked_text=result.text,
         detected_types=sorted(set(result.detection_types)),
-        detected_count=len(result.detection_types),
+        detected_count=result.detection_count,
         grade=grade.value,
         detection_confidence=confidence.value,
         remaining_count=len(result.remaining),
@@ -101,6 +137,7 @@ def decide(body: DecideIn):
     if item is None:
         raise HTTPException(status_code=404, detail="unknown or expired work_id")
 
+    keep_session = body.action == Action.send_transformed
     try:
         event_in = build_event(
             work_id=item.work_id,
@@ -121,8 +158,37 @@ def decide(body: DecideIn):
             outgoing = item.original_text
         else:  # cancel
             outgoing = None
+    except Exception:
+        # On failure, do not leak the item; release it.
+        item.session.close()
+        raise
 
-        return DecideOut(event=saved, outgoing_text=outgoing)
+    if keep_session:
+        # Re-insert so /process/restore can de-pseudonymize the AI reply.
+        store.put(item)
+    else:
+        item.session.close()
+
+    return DecideOut(
+        event=saved, outgoing_text=outgoing, restore_available=keep_session
+    )
+
+
+@router.post("/restore", response_model=RestoreOut)
+def restore(body: RestoreIn):
+    item = store.pop(body.work_id)
+    if item is None:
+        raise HTTPException(
+            status_code=404,
+            detail="unknown or expired work_id (did you call /decide with send_transformed?)",
+        )
+    try:
+        result = item.session.restore(body.text)
+        return RestoreOut(
+            text=result.text,
+            unknown=list(result.unknown),
+            blocked=list(result.blocked),
+        )
     finally:
-        # Always release the local_ai session for this work item.
+        # Restoration is the final step for this work item.
         item.session.close()

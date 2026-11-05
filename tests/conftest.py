@@ -6,8 +6,17 @@ time, so we set them before anything under app/ is imported.
 import importlib
 import os
 import sys
+from pathlib import Path
 
 import pytest
+
+# Some xlsx tests import sibling test modules directly
+# (e.g. `from test_xlsx_value_integrity import ...`). Because tests/ is a
+# package, pytest does not add this directory to sys.path, so make it
+# importable here. Harmless for the other tests.
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
 
 
 @pytest.fixture()

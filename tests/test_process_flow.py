@@ -29,6 +29,15 @@ def test_process_secret_is_confidential(client):
     assert "API_KEY" in body["detected_types"]
 
 
+def test_detected_count_is_span_count_not_distinct_types(client):
+    # Regression (P2-D): two phone numbers = 2 spans but 1 distinct type.
+    # detected_count must be 2 (spans), not 1 (types).
+    text = "010-1111-2222 그리고 010-3333-4444"
+    body = client.post("/process", json={"text": text, "rules_only": True}).json()
+    assert body["detected_types"] == ["PHONE"]
+    assert body["detected_count"] == 2
+
+
 def test_process_clean_text_is_public(client):
     r = client.post("/process", json={"text": "오늘 날씨 좋네요", "rules_only": True})
     body = r.json()
@@ -53,12 +62,21 @@ def test_empty_text_rejected(client):
     assert client.post("/process", json={"text": "", "rules_only": True}).status_code == 422
 
 
+def test_oversized_text_rejected(client):
+    # Regression (P1-C): input is bounded to prevent unbounded CPU/memory.
+    big = "a" * 50_001
+    assert client.post("/process", json={"text": big, "rules_only": True}).status_code == 422
+    # At the limit it is accepted.
+    ok = "a" * 50_000
+    assert client.post("/process", json={"text": ok, "rules_only": True}).status_code == 200
+
+
 # --- decide -----------------------------------------------------------------
 def _process(client, text="연락 010-1234-5678"):
     return client.post("/process", json={"text": text, "rules_only": True}).json()
 
 
-def test_decide_send_transformed_logs_and_returns_masked(client):
+def test_decide_send_transformed_logs_and_keeps_session(client):
     proc = _process(client)
     r = client.post(
         "/process/decide",
@@ -69,12 +87,65 @@ def test_decide_send_transformed_logs_and_returns_masked(client):
     # masked text is what gets sent onward
     assert body["outgoing_text"] == proc["masked_text"]
     assert "010-1234-5678" not in body["outgoing_text"]
+    # session is kept for later restore of the AI reply
+    assert body["restore_available"] is True
     ev = body["event"]
-    assert ev["restored"] is True
+    # restored is False at decide time (restore happens via /process/restore)
+    assert ev["restored"] is False
     assert ev["grade"] == "sensitive_S"
     assert ev["request_id"] == proc["work_id"]
     # event persisted to the log
     assert len(client.get("/logs/events").json()) == 1
+
+
+def test_restore_after_send_transformed(client):
+    # Send masked text, then restore originals in a (fake) AI reply.
+    proc = _process(client, "연락 010-1234-5678")
+    masked = proc["masked_text"]  # contains [전화번호_1]
+    client.post(
+        "/process/decide",
+        json={"work_id": proc["work_id"], "action": "send_transformed"},
+    )
+    # AI reply echoes the placeholder; restore should bring back the original.
+    reply = f"확인했습니다. {masked} 로 연락드릴게요."
+    r = client.post(
+        "/process/restore",
+        json={"work_id": proc["work_id"], "text": reply},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "010-1234-5678" in body["text"]
+    assert body["blocked"] == []
+
+    # Work item is consumed after restore.
+    again = client.post(
+        "/process/restore",
+        json={"work_id": proc["work_id"], "text": reply},
+    )
+    assert again.status_code == 404
+
+
+def test_restore_without_session_404(client):
+    r = client.post(
+        "/process/restore",
+        json={"work_id": "nope", "text": "hi"},
+    )
+    assert r.status_code == 404
+
+
+def test_non_transformed_decide_releases_session(client):
+    # cancel must not keep a session around for restore.
+    proc = _process(client)
+    body = client.post(
+        "/process/decide",
+        json={"work_id": proc["work_id"], "action": "cancel"},
+    ).json()
+    assert body["restore_available"] is False
+    r = client.post(
+        "/process/restore",
+        json={"work_id": proc["work_id"], "text": "x"},
+    )
+    assert r.status_code == 404
 
 
 def test_decide_send_as_is_returns_original(client):
@@ -109,6 +180,30 @@ def test_decide_revert_with_reason(client):
     assert ev["reverted"] is True
     assert ev["reason"] == "business_need"
     assert ev["queue"] == "violation_candidate"  # business_need -> this queue
+
+
+def test_decide_release_session_on_insert_failure(client, monkeypatch):
+    # If logging the event fails, the work item's session must still be closed
+    # and the error propagated (not leaked as a dangling session). We call the
+    # route function directly so the raised error is observable.
+    import pytest
+
+    import app.process_router as pr
+    from app.sessions import store
+    from app.schemas import DecideIn
+
+    proc = _process(client)
+    item = store.get(proc["work_id"])
+
+    def boom(_event):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(pr.crud, "insert_event", boom)
+
+    with pytest.raises(RuntimeError):
+        pr.decide(DecideIn(work_id=proc["work_id"], action="cancel"))
+    # LocalSession marks itself closed via the private _closed flag.
+    assert item.session._closed is True
 
 
 def test_decide_unknown_work_id_404(client):
@@ -149,7 +244,7 @@ def test_process_detection_failure_returns_422_without_text(client, monkeypatch)
         def close(self):
             pass
 
-    monkeypatch.setattr(pr, "_build_detector", lambda rules_only: object())
+    monkeypatch.setattr(pr, "_get_detector", lambda rules_only: object())
     import local_ai.pipeline as pipeline
 
     monkeypatch.setattr(pipeline, "LocalSession", BoomSession)
@@ -182,6 +277,7 @@ def test_full_mode_with_model_dir_builds_detector(client, monkeypatch, tmp_path)
         detection_types = ("NAME",)
         remaining = ()
         coverage = "model_and_rules"
+        detection_count = 1
 
     class FakeSession:
         def __init__(self, detector):
@@ -203,6 +299,34 @@ def test_full_mode_with_model_dir_builds_detector(client, monkeypatch, tmp_path)
     assert built["model_dir"] == str(tmp_path)  # model dir branch taken
     assert body["detection_confidence"] == "high"  # model_and_rules -> high
     assert body["grade"] == "sensitive_S"
+
+
+def test_detector_is_reused_across_requests(client):
+    # Regression (P1-A): the detector must be built once per mode and reused,
+    # not rebuilt (tokenizer + ONNX session) on every /process call.
+    import app.process_router as pr
+    import local_ai.detector as det
+
+    builds = {"n": 0}
+    real = det.Detector
+
+    class CountingDetector(real):
+        def __init__(self, *a, **kw):
+            builds["n"] += 1
+            super().__init__(*a, **kw)
+
+    pr._reset_detectors()
+    det.Detector = CountingDetector
+    try:
+        for _ in range(3):
+            assert client.post(
+                "/process", json={"text": "010-1234-5678", "rules_only": True}
+            ).status_code == 200
+    finally:
+        det.Detector = real
+        pr._reset_detectors()
+
+    assert builds["n"] == 1  # built once, reused for the other two requests
 
 
 def test_e2e_process_decide_stats(client):

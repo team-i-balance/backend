@@ -45,14 +45,12 @@ def build_event(
     action: Action,
     reason: Optional[Reason],
 ) -> EventIn:
-    """Construct the EventIn for a user's decision on a processed item.
-
-    reverted  = user rolled back to the original (revert_original)
-    restored  = masked text was sent and the AI reply will have originals
-                restored, i.e. the send_transformed path.
-    """
+    """Construct the EventIn for a user's decision on a processed item."""
+    # reverted: user rolled back to the original (revert_original).
+    # restored: whether the AI reply's originals were restored. At decide time
+    #   this has not happened yet, so it is always False here; the actual
+    #   restore step (/process/restore) is a separate action.
     reverted = action == Action.revert_original
-    restored = action == Action.send_transformed
     return EventIn(
         request_id=work_id,
         grade=grade,
@@ -62,6 +60,6 @@ def build_event(
         detected_types=sorted(set(detected_types)),
         detected_count=detected_count,
         reverted=reverted,
-        restored=restored,
+        restored=False,
         content_hash=hash_text(original_text),
     )

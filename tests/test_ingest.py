@@ -46,7 +46,9 @@ def test_build_event_core_fields():
 
 
 def test_reverted_and_restored_flags():
-    assert _event(Action.send_transformed).restored is True
+    # restored is always False at decide time; the actual restore of the AI
+    # reply happens later via /process/restore.
+    assert _event(Action.send_transformed).restored is False
     assert _event(Action.send_transformed).reverted is False
     assert _event(Action.revert_original).reverted is True
     assert _event(Action.revert_original).restored is False
