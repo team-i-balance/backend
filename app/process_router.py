@@ -34,7 +34,6 @@ from fastapi import APIRouter, HTTPException, Response
 
 from app import crud
 from app.decide_items import (
-    UNKNOWN_PLACEHOLDER,
     build_items,
     check_reverted,
     partially_restored,
@@ -181,10 +180,10 @@ def decide(body: DecideIn):
     if body.reverted is not None:
         try:
             reverted = check_reverted(item.spans, body.reverted)
-        except ValueError:
+        except ValueError as exc:
             # A client mistake must not consume the work: keep it for a retry.
             store.put(item)
-            raise HTTPException(status_code=422, detail=UNKNOWN_PLACEHOLDER) from None
+            raise HTTPException(status_code=422, detail=str(exc)) from None
 
     keep_session = body.action == Action.send_transformed
     try:

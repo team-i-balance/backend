@@ -27,7 +27,7 @@
 | `user_id` | 아니요 | 문자열 64자 이하(`/logs/events`와 같음) |
 | `dept` | 아니요 | 문자열 128자 이하 |
 | `target_ai` | 아니요 | 문자열 128자 이하 |
-| `reverted` | 아니요 | 직원이 원문으로 되돌린 가명 토큰 목록(예: `["[이름_1]","[전화번호_2]"]`). 최대 500개, 항목당 64자 이하, 중복은 한 번으로 셈. `action`이 `revert_original`이 아니면 `422` |
+| `reverted` | 아니요 | 직원이 원문으로 되돌린 가명 토큰 목록(예: `["[이름_1]","[전화번호_2]"]`). 1~500개, 항목당 64자 이하, 중복은 한 번으로 셈. 빈 목록은 `422 EMPTY_REVERTED`. `action`이 `revert_original`이 아니면 `422` |
 
 `reason` 뒤의 필드는 모두 선택입니다. 전부 빼면 예전과 같은 결과를 돌려줍니다(이벤트 `items`만 서버가 새로 채움).
 
@@ -36,7 +36,10 @@
 - 그 작업의 `masked_text`에 서버가 넣은 토큰만 받습니다. 그 밖의 값(없는 번호, 다른 작업의 토큰,
   직원이 입력에 직접 적은 `[전화번호_1]` 같은 글자, `[삭제됨]`·`[이름]` 같은 고정 출력)이 하나라도 있으면
   `422 {"detail": "UNKNOWN_PLACEHOLDER"}`입니다.
-- 요청 형식 오류(`422`)와 `UNKNOWN_PLACEHOLDER`는 작업을 소모하지 않습니다. 같은 `work_id`로 다시 보낼 수 있습니다.
+- 빈 목록(`[]`)은 `422 {"detail": "EMPTY_REVERTED"}`입니다. 원문을 하나도 보내지 않는데 이벤트가
+  되돌림(`reverted=true`)으로 저장돼 위반·되돌림률에 잡히기 때문입니다. 아무것도 되돌리지 않으려면
+  `send_transformed`를 보냅니다.
+- 요청 형식 오류(`422`)와 `UNKNOWN_PLACEHOLDER`·`EMPTY_REVERTED`는 작업을 소모하지 않습니다. 같은 `work_id`로 다시 보낼 수 있습니다.
 
 ## 응답
 
@@ -53,7 +56,7 @@
 | `send_transformed` | 가린 문장(`masked_text`). 작업을 남겨 `/process/restore`로 답변을 복원할 수 있음 |
 | `send_as_is` | 원문 전체 |
 | `revert_original`, `reverted` 없음 | 원문 전체(예전 앱) |
-| `revert_original`, `reverted` 있음 | 가린 문장에서 `reverted`의 토큰만 원문으로 되돌린 문장. 빈 목록이면 가린 문장 그대로 |
+| `revert_original`, `reverted` 있음 | 가린 문장에서 `reverted`의 토큰만 원문으로 되돌린 문장 |
 | `cancel` | `null` |
 
 ## 이벤트 `items`

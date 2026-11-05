@@ -18,6 +18,7 @@ from app.policy_apply import _hash_key, value_hashes
 from app.schemas import Action, Decision, EventItem
 
 UNKNOWN_PLACEHOLDER = "UNKNOWN_PLACEHOLDER"
+EMPTY_REVERTED = "EMPTY_REVERTED"
 
 # Types whose preview hides every letter and digit.
 _FULL_MASK_TYPES = frozenset({
@@ -54,9 +55,15 @@ def value_hash(value: str, key: Optional[bytes]) -> Optional[str]:
 
 
 def check_reverted(spans, reverted: Iterable[str]) -> Optional[set[str]]:
-    """The reverted placeholders as a set; raise ValueError for one not in this work."""
-    known = {s.output for s in spans if s.restorable}
+    """The reverted placeholders as a set; raise ValueError (detail code) otherwise.
+
+    An empty list is refused: nothing original would be sent, yet the event would
+    count as a revert (real_violation, revert rate).
+    """
     chosen = set(reverted)
+    if not chosen:
+        raise ValueError(EMPTY_REVERTED)
+    known = {s.output for s in spans if s.restorable}
     if not chosen <= known:
         raise ValueError(UNKNOWN_PLACEHOLDER)
     return chosen
@@ -91,9 +98,7 @@ def build_items(spans, action: Action, reverted: Optional[set[str]]) -> list[Eve
 
 
 def partially_restored(masked_text: str, spans, reverted: set[str]) -> str:
-    """Masked text with only the chosen placeholders put back, in a single pass."""
-    if not reverted:
-        return masked_text
+    """Masked text with only the chosen (non-empty) placeholders put back, in a single pass."""
     originals = {s.output: s.value for s in spans if s.restorable and s.output in reverted}
     pattern = re.compile("|".join(re.escape(t) for t in sorted(originals, key=len, reverse=True)))
     return pattern.sub(lambda m: originals[m.group()], masked_text)

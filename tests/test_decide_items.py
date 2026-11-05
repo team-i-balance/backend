@@ -143,11 +143,17 @@ def test_partial_revert_restores_only_chosen_placeholders(client, keyed):
     assert body["restore_available"] is False
 
 
-def test_empty_reverted_list_sends_masked_text(client):
+def test_empty_reverted_list_is_422_and_work_survives(client):
+    # Nothing original would be sent, yet the event would count as a revert.
     work = process(client)
-    body = decide(client, work["work_id"], action="revert_original", reverted=[]).json()
-    assert body["outgoing_text"] == work["masked_text"]
-    assert {i["decision"] for i in body["event"]["items"]} == {"converted"}
+    r = decide(client, work["work_id"], action="revert_original", reverted=[])
+    assert r.status_code == 422 and r.json()["detail"] == "EMPTY_REVERTED"
+    from app.db import get_conn
+    with get_conn() as conn:
+        assert conn.execute("SELECT count(*) FROM event_log").fetchone()[0] == 0
+    body = decide(client, work["work_id"], action="revert_original",
+                  reverted=["[이메일_1]"]).json()
+    assert body["outgoing_text"] == f"연락처 [전화번호_1], 메일 {EMAIL}, 사무실 [전화번호_2]"
 
 
 @pytest.mark.parametrize("token", ["[전화번호_9]", "[이름_1]", "전화번호_1", "[이메일]"])
