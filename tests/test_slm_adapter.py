@@ -120,6 +120,13 @@ class SlmAdapterTests(unittest.TestCase):
             self.assertEqual(text[off:off + len(c)], c)
         self.assertTrue(text.endswith(chunks[-1][1]))  # tail is covered
 
+    def test_generator_metadata_skipped(self):
+        from local_ai.slm import _GENERATOR
+        for t in ['Microsoft Excel Compatible / Openpyxl 3.1.5', 'openpyxl', 'Microsoft Excel', 'LibreOffice 7.6']:
+            self.assertTrue(_GENERATOR.match(t), t)
+        for t in ['openpyxl로 사내 서버 10.0.0.5 접속', 'Project Maple 일정', '오로라 프로젝트']:
+            self.assertFalse(_GENERATOR.match(t), t)
+
     def test_grading_of_slm_types(self):
         self.assertEqual(decide_grade(['INTERNAL']), Grade.sensitive)
         self.assertEqual(decide_grade(['CONFIDENTIAL']), Grade.confidential)
@@ -139,6 +146,7 @@ class RealSlmTests(unittest.TestCase):
         return r.text
 
     def test_examples(self):
+        self.assertEqual(self.check('이름', Grade.public), '이름')
         masked = self.check('김민지 고객님 배송지 서울시 마포구 월드컵북로4길 17, 3층으로 변경 안내문 써줘', Grade.sensitive)
         self.assertNotIn('김민지', masked)
         self.assertNotIn('월드컵북로', masked)

@@ -34,6 +34,14 @@ CHUNK_WORDS = 200
 # Overlap between windows when one sentence alone exceeds CHUNK_WORDS.
 CHUNK_OVERLAP = 20
 _SENT_END = re.compile(r"(?<=[.!?。])\s+|\n+")
+# Column-header words the SLM reads as a person's name when they stand alone in a cell.
+_NAME_HEADERS = frozenset({"이름", "성명", "성함", "실명", "이름(한글)", "이름(영문)", "고객명", "담당자", "담당자명",
+                           "작성자", "신청자", "대표자", "name", "full name"})
+# Office/spreadsheet generator names and versions found in document properties (the XLSX
+# writer itself adds "Microsoft Excel Compatible / Openpyxl 3.1.5" to every protected copy).
+# They are not user content, and the SLM misreads them as internal host names.
+_GENERATOR = re.compile(r"(?i)^\s*(?:(?:microsoft\s+excel|excel|openpyxl|libreoffice|openoffice|google\s+sheets"
+                        r"|wps\s+office|numbers|compatible)[\s./()\-]*\d*(?:\.\d+)*[\s./()\-]*)+$")
 
 
 def load_policy(path: str | Path) -> list[dict]:
@@ -115,6 +123,8 @@ class SlmSpanDetector:
 
     def detect(self, text: str) -> list[dict]:
         """Non-overlapping spans: {start, end, type, rule_id, score}."""
+        if _GENERATOR.match(text):
+            return []
         raw = []
         low = min(self.thresholds.values())
         for off, chunk in self._chunks(text):
@@ -122,6 +132,8 @@ class SlmSpanDetector:
                                                  flat_ner=False, multi_label=True):
                 rid = self.label2id[e["label"]]
                 kind = self._type(rid)
+                if kind == "NAME" and e["text"].strip().lower() in _NAME_HEADERS:
+                    continue
                 if e["score"] >= self.thresholds[kind]:
                     raw.append({"start": off + e["start"], "end": off + e["end"], "type": kind,
                                 "rule_id": rid, "score": round(float(e["score"]), 3)})
