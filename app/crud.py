@@ -37,6 +37,7 @@ def _row_to_dict(row) -> dict:
     d["detected_types"] = json.loads(d.get("detected_types") or "[]")
     d["reverted"] = bool(d["reverted"])
     d["restored"] = bool(d["restored"])
+    d["test"] = bool(d.pop("is_test", 0))
     return d
 
 
@@ -50,8 +51,8 @@ def insert_event(event: EventIn) -> dict:
             INSERT INTO event_log (
                 created_at, request_id, grade, action, reason,
                 detection_confidence, detected_types, detected_count,
-                reverted, restored, content_hash, queue
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                reverted, restored, content_hash, queue, is_test
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -68,6 +69,7 @@ def insert_event(event: EventIn) -> dict:
                 int(event.restored),
                 event.content_hash,
                 queue.value,
+                int(event.test),
             ),
         )
         new_id = cur.lastrowid
@@ -85,9 +87,12 @@ def list_events(
     start: Optional[str] = None,
     end: Optional[str] = None,
     limit: int = 100,
+    include_test: bool = False,
 ) -> list[dict]:
     clauses = []
     params: list = []
+    if not include_test:
+        clauses.append("is_test = 0")
     if grade:
         clauses.append("grade = ?")
         params.append(grade)
@@ -113,9 +118,14 @@ def list_events(
     return [_row_to_dict(r) for r in rows]
 
 
-def get_stats() -> Stats:
+def get_stats(*, include_test: bool = False) -> Stats:
+    # Every aggregate shares the same base filter so test events never skew
+    # totals or rates unless explicitly requested.
+    base = "1 = 1" if include_test else "is_test = 0"
     with get_conn() as conn:
-        total = conn.execute("SELECT COUNT(*) AS c FROM event_log").fetchone()["c"]
+        total = conn.execute(
+            f"SELECT COUNT(*) AS c FROM event_log WHERE {base}"
+        ).fetchone()["c"]
 
         if total == 0:
             return Stats(
@@ -129,28 +139,32 @@ def get_stats() -> Stats:
 
         placeholders = ",".join("?" * len(_ACCEPTED_ACTIONS))
         accepted = conn.execute(
-            f"SELECT COUNT(*) AS c FROM event_log WHERE action IN ({placeholders})",
+            f"SELECT COUNT(*) AS c FROM event_log "
+            f"WHERE {base} AND action IN ({placeholders})",
             _ACCEPTED_ACTIONS,
         ).fetchone()["c"]
 
         reverted = conn.execute(
-            "SELECT COUNT(*) AS c FROM event_log WHERE reverted = 1"
+            f"SELECT COUNT(*) AS c FROM event_log WHERE {base} AND reverted = 1"
         ).fetchone()["c"]
 
         evasion = conn.execute(
-            "SELECT COUNT(*) AS c FROM event_log WHERE reason = 'business_need'"
+            f"SELECT COUNT(*) AS c FROM event_log "
+            f"WHERE {base} AND reason = 'business_need'"
         ).fetchone()["c"]
 
         by_queue = {
             r["queue"]: r["c"]
             for r in conn.execute(
-                "SELECT queue, COUNT(*) AS c FROM event_log GROUP BY queue"
+                f"SELECT queue, COUNT(*) AS c FROM event_log "
+                f"WHERE {base} GROUP BY queue"
             ).fetchall()
         }
         by_grade = {
             r["grade"]: r["c"]
             for r in conn.execute(
-                "SELECT grade, COUNT(*) AS c FROM event_log GROUP BY grade"
+                f"SELECT grade, COUNT(*) AS c FROM event_log "
+                f"WHERE {base} GROUP BY grade"
             ).fetchall()
         }
 

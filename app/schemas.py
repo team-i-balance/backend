@@ -58,6 +58,9 @@ class EventIn(BaseModel):
     # SHA-256 hex digest: exactly 64 hex chars. We never store raw content,
     # only this optional fingerprint (see rules.md section 6).
     content_hash: Optional[str] = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
+    # Integration/smoke-test event. Stored and classified like any other, but
+    # excluded from list/queue/stats/export unless include_test=true.
+    test: bool = False
 
 
 class EventOut(BaseModel):
@@ -74,6 +77,7 @@ class EventOut(BaseModel):
     restored: bool
     content_hash: Optional[str]
     queue: str
+    test: bool = False
 
 
 class Stats(BaseModel):

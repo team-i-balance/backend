@@ -13,6 +13,11 @@ from app.schemas import EventIn, EventOut, ExportResult, Stats
 
 router = APIRouter(prefix="/logs", tags=["logs"])
 
+_INCLUDE_TEST = Query(
+    default=False,
+    description="Include integration-test events (test=true). Default: excluded.",
+)
+
 
 def _validate_iso(value: Optional[str], field: str) -> None:
     """Reject malformed date filters so they can't silently mis-filter."""
@@ -40,31 +45,44 @@ def get_events(
     start: Optional[str] = Query(default=None, description="ISO8601 lower bound"),
     end: Optional[str] = Query(default=None, description="ISO8601 upper bound"),
     limit: int = Query(default=100, ge=1, le=1000),
+    include_test: bool = _INCLUDE_TEST,
 ):
     _validate_iso(start, "start")
     _validate_iso(end, "end")
     return crud.list_events(
-        grade=grade, queue=queue, start=start, end=end, limit=limit
+        grade=grade,
+        queue=queue,
+        start=start,
+        end=end,
+        limit=limit,
+        include_test=include_test,
     )
 
 
 @router.get("/queues/{name}", response_model=list[EventOut])
-def get_queue(name: str, limit: int = Query(default=100, ge=1, le=1000)):
-    return crud.list_events(queue=name, limit=limit)
+def get_queue(
+    name: str,
+    limit: int = Query(default=100, ge=1, le=1000),
+    include_test: bool = _INCLUDE_TEST,
+):
+    return crud.list_events(queue=name, limit=limit, include_test=include_test)
 
 
 @router.get("/stats", response_model=Stats)
-def get_stats():
-    return crud.get_stats()
+def get_stats(include_test: bool = _INCLUDE_TEST):
+    return crud.get_stats(include_test=include_test)
 
 
 @router.post("/export", response_model=ExportResult)
 def export_logs(
     queue: Optional[str] = None,
     limit: int = Query(default=1000, ge=1, le=10000),
+    include_test: bool = _INCLUDE_TEST,
 ):
     """Encrypt matching logs with the security team public key and write a file."""
-    records = crud.list_events(queue=queue, limit=limit)
+    records = crud.list_events(
+        queue=queue, limit=limit, include_test=include_test
+    )
     path = encrypt_records(records)
     return ExportResult(
         exported=len(records),

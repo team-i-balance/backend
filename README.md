@@ -14,6 +14,16 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 파일 API의 요청·응답, 오류 코드, 내부 AI 전송 연결 방법은 [파일 API 문서](docs/file-api.md)를 참고하세요.
 기존 텍스트·로그 API를 포함한 전체 명세는 서버의 `/docs`에서 확인할 수 있습니다.
 
+### 로그 API 시험 이벤트
+
+연동 확인용 이벤트는 `POST /logs/events` 본문에 `"test": true`를 넣어 보냅니다. 저장과 큐 분류는 일반 이벤트와 같지만, 아래 조회에서는 기본으로 빠집니다.
+
+- `GET /logs/events`, `GET /logs/queues/{name}`, `GET /logs/stats`, `POST /logs/export`
+- 시험 이벤트까지 보려면 쿼리에 `include_test=true`를 붙입니다. 예: `GET /logs/stats?include_test=true`
+- 응답의 각 이벤트에는 `test` 필드(true/false)가 있습니다.
+
+`test` 필드가 생기기 전에 들어간 `request_id`가 `console-test-`로 시작하는 이벤트는 서버 시작 때 마이그레이션이 시험 이벤트로 표시합니다. 데이터는 지우지 않습니다.
+
 ## 로컬 실행
 
 ```bash
