@@ -4,24 +4,35 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 
 ## 엔드포인트
 
-| Method | Path      | 설명                          |
-| ------ | --------- | ----------------------------- |
-| GET    | `/`       | 서비스 정보 + 상태            |
-| GET    | `/health` | `{"status": "ok"}` 헬스체크   |
-| GET    | `/logs/stats` | 기간별 통계 및 행동·등급·큐별 건수 |
-| GET    | `/logs/events` | 기간·등급·큐 필터와 커서 페이지 넘김 |
-| POST   | `/events/{event_id}/reason` | 민감 원문 전송 후 직원 사유 제출·저장 |
-| POST   | `/files/sanitize` | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
-| GET    | `/files/{work_id}/download` | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
-| POST   | `/files/{work_id}/restore` | 파일 매핑으로 AI 답변 복원; 만료 전까지 여러 번 |
-| GET    | `/cases` | 필수·선택 검토 및 종결 건 목록, 커서 페이지 이동 |
-| GET    | `/cases/{id}` | 이벤트 메타데이터와 판단·처리 이력 |
-| POST   | `/cases/{id}/close` | 위반·예외 인정·오탐으로 종결 |
-| POST   | `/cases/{id}/reopen` | 이전 이력을 유지하고 다시 열기 |
-| POST   | `/cases/close-bulk` | 선택 검토 건을 일괄 ‘문제 없음’으로 종결 |
-| GET    | `/policy/draft` | 저장된 정책 초안과 변경 목록, ETag 조회 |
-| PUT    | `/policy/draft` | If-Match로 동시 수정을 확인하고 초안 전체 저장 |
-| POST   | `/policy/publish` | 저장된 초안 또는 직접 전달한 payload 서명·발행 |
+인증 열: `api` = api 또는 security 토큰, `security` = security 토큰만, `없음` = 토큰 불필요. 자세한 규칙은 [app/rules.md §11](app/rules.md)을 참고하세요.
+
+| Method | Path | 인증 | 설명 |
+| ------ | ---- | ---- | ---- |
+| GET    | `/` | 없음 | 서비스 정보 + 상태 |
+| GET    | `/health` | 없음 | `{"status": "ok"}` 헬스체크 |
+| POST   | `/auth/dev-token` | 없음 | 즉석 Bearer 토큰 발급(`{"scope": "api"\|"security"}`); `DISABLE_DEV_TOKEN=1`이면 403 |
+| POST   | `/logs/events` | api | 런타임 이벤트 1건 저장·큐 분류(`"test": true`면 시험 이벤트) |
+| GET    | `/logs/events` | security | 기간·등급·큐 필터와 커서 페이지 넘김 |
+| GET    | `/logs/stats` | security | 기간별 통계 및 행동·등급·큐별 건수 |
+| POST   | `/logs/export` | security | 보안팀 공개키로 암호화한 로그 파일 생성. 큐·기간(`start`/`end`) 필터, `limit`(기본 1,000·최대 10,000), `cursor`/`next_cursor` 페이지 넘김 |
+| POST   | `/events/{event_id}/reason` | api | 민감 원문 전송 후 직원 사유 제출·저장 |
+| POST   | `/files/sanitize` | api | XLSX 업로드·검사·보호본 생성 및 임시 보관 |
+| GET    | `/files/{work_id}/download` | api | 보호본 1회 다운로드; 복원 매핑은 만료까지 유지 |
+| POST   | `/files/{work_id}/restore` | api | 파일 매핑으로 AI 답변 복원; 만료 전까지 여러 번 |
+| GET    | `/cases` | 없음(인증 미연결) | 필수·선택 검토 및 종결 건 목록, 커서 페이지 이동 |
+| GET    | `/cases/{id}` | 없음(인증 미연결) | 이벤트 메타데이터와 판단·처리 이력 |
+| POST   | `/cases/{id}/close` | 없음(인증 미연결) | 위반·예외 인정·오탐으로 종결 |
+| POST   | `/cases/{id}/reopen` | 없음(인증 미연결) | 이전 이력을 유지하고 다시 열기 |
+| POST   | `/cases/close-bulk` | 없음(인증 미연결) | 선택 검토 건을 일괄 ‘문제 없음’으로 종결 |
+| GET    | `/policy/latest` | api | 최신 서명 번들. `ETag: "sha256:…"`, `If-None-Match`가 맞으면 304 |
+| GET    | `/policy/history` | security | 발행된 번들 목록(최신순): 버전·`sha256`·저장 시각·규칙 수 |
+| GET    | `/policy/acks` | security | PC 적용/거부 집계(`?version=N`으로 한 버전만) |
+| GET    | `/policy/{version}/acks` | security | 한 버전의 기기 수·applied·rejected·거부 사유별 건수 |
+| GET    | `/policy/draft` | security | 저장된 정책 초안과 변경 목록, ETag 조회 |
+| PUT    | `/policy/draft` | security | If-Match로 동시 수정을 확인하고 초안 전체 저장 |
+| POST   | `/policy/publish` | security | 저장된 초안 또는 직접 전달한 payload 서명·발행 |
+
+`/cases*`는 현재 라우터에 토큰 의존성이 없습니다(처리자는 `unauthenticated`로 기록). 보안팀 인증 연결은 #10 후속 작업입니다.
 
 파일 API의 요청·응답, 오류 코드, 내부 AI 전송 연결 방법은 [파일 API 문서](docs/file-api.md)를 참고하세요.
 검토 대상 기준, 요청·응답과 콘솔 연결 방법은 [보안팀 검토 API 문서](docs/case-api.md)를 참고하세요.
@@ -38,6 +49,7 @@ FastAPI 기반 백엔드. 텍스트 개인정보 처리, 보안 이벤트 로그
 - `GET /logs/events`, `GET /logs/queues/{name}`, `GET /logs/stats`, `POST /logs/export`
 - 시험 이벤트까지 보려면 쿼리에 `include_test=true`를 붙입니다. 예: `GET /logs/stats?include_test=true`
 - 응답의 각 이벤트에는 `test` 필드(true/false)가 있습니다.
+- 반면 `/cases*`는 시험 이벤트를 **항상** 제외합니다. `include_test` 쿼리가 없고, 시험 이벤트는 검토 건이 되지 않습니다.
 
 `test` 필드가 생기기 전에 들어간 `request_id`가 `console-test-`로 시작하는 이벤트는 서버 시작 때 마이그레이션이 시험 이벤트로 표시합니다. 데이터는 지우지 않습니다.
 

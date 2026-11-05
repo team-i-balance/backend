@@ -148,8 +148,8 @@ def test_history_newest_first_with_fields(client):
         assert set(item) == {"version", "sha256", "stored_at", "rule_count"}
         at = datetime.fromisoformat(item["stored_at"])
         assert at.utcoffset() == timezone.utc.utcoffset(None)
-    # sha256 matches the stored bundle's ETag
-    assert client.get("/policy/latest").headers["ETag"] == items[0]["sha256"]
+    # sha256 (unquoted body value) matches the quoted RFC ETag header
+    assert client.get("/policy/latest").headers["ETag"] == f'"{items[0]["sha256"]}"'
 
 
 def test_history_route_not_shadowed_by_version(client):

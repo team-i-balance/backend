@@ -94,16 +94,33 @@ def get_stats(
 )
 def export_logs(
     queue: Optional[str] = None,
+    start: Optional[str] = Query(default=None, description="Inclusive ISO8601 lower bound"),
+    end: Optional[str] = Query(default=None, description="Inclusive ISO8601 upper bound"),
     limit: int = Query(default=1000, ge=1, le=10000),
     include_test: bool = _INCLUDE_TEST,
+    cursor: Optional[int] = Query(
+        default=None, ge=1, le=2**63 - 1,
+        description="next_cursor from the previous export (same as /logs/events cursor)",
+    ),
 ):
-    """Encrypt matching logs with the security team public key and write a file."""
+    """Encrypt matching logs with the security team public key and write a file.
+
+    Pages newest-first by ID like GET /logs/events. When more rows match,
+    next_cursor is the last exported ID; pass it back as cursor.
+    """
+    _validate_period(start, end)
     records = crud.list_events(
-        queue=queue, limit=limit, include_test=include_test
+        queue=queue, start=start, end=end, limit=limit + 1, cursor=cursor,
+        include_test=include_test,
     )
+    next_cursor = None
+    if len(records) > limit:
+        records = records[:limit]
+        next_cursor = records[-1]["id"]
     path = encrypt_records(records)
     return ExportResult(
         exported=len(records),
         file=str(path),
         public_key_fingerprint=public_key_fingerprint(),
+        next_cursor=next_cursor,
     )
