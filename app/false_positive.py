@@ -1,7 +1,9 @@
 """False-positive report clustering and security-team decisions (issue #48).
 
 A report is an event item whose effective reason (item reason, else event
-reason) is ``false_positive`` and that carries a ``value_hash``. Items without
+reason) is ``false_positive`` and that carries a ``value_hash``. A ``converted``
+item (still masked) does not inherit the event reason: the employee reported
+only the values they sent as original (#63). Items without
 a value_hash cannot be clustered and are not listed here; those events remain
 visible through /logs (detection_improve queue).
 
@@ -35,7 +37,9 @@ _REPORTS = f"""
     FROM event_log e, json_each(CASE WHEN json_valid(e.items) THEN e.items ELSE '[]' END) j
     WHERE e.is_test = 0
       AND (e.reason = 'false_positive' OR instr(e.items, 'false_positive') > 0)
-      AND COALESCE({_ITEM_REASON}, e.reason) = 'false_positive'
+      AND COALESCE({_ITEM_REASON},
+                   CASE WHEN json_extract(j.value, '$.decision') = 'converted'
+                        THEN NULL ELSE e.reason END) = 'false_positive'
       AND json_extract(j.value, '$.value_hash') IS NOT NULL
 """
 

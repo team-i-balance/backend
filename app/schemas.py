@@ -3,7 +3,7 @@
 Enum values mirror app/rules.md (the temporary in-house classification rules).
 """
 from enum import Enum
-from typing import Optional
+from typing import Annotated, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -270,11 +270,39 @@ class ProcessOut(BaseModel):
 
 
 class DecideIn(BaseModel):
-    """The user's choice for a previously processed work item."""
+    """The user's choice for a previously processed work item.
+
+    Everything after ``reason`` is optional (issue #63); a client that omits it
+    gets the previous behavior.
+    """
 
     work_id: str
     action: Action
     reason: Optional[Reason] = None
+    # Same limits as EventIn's fields of the same name.
+    user_id: Optional[str] = Field(default=None, max_length=64)
+    dept: Optional[str] = Field(default=None, max_length=128)
+    target_ai: Optional[str] = Field(default=None, max_length=128)
+    # Employee's explanation; only together with ``reason``.
+    reason_text: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    # revert_original only: the placeholders of this work's masked_text the
+    # employee put back to the original (e.g. "[이름_1]"). Omitted = all of them.
+    reverted: Optional[list[Annotated[str, Field(max_length=64)]]] = Field(
+        default=None, max_length=500,
+    )
+
+    @field_validator("reason_text", mode="before")
+    @classmethod
+    def _strip_reason_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _check_combinations(self):
+        if self.reason_text is not None and self.reason is None:
+            raise ValueError("reason_text requires reason")
+        if self.reverted is not None and self.action != Action.revert_original:
+            raise ValueError("reverted is only allowed with action=revert_original")
+        return self
 
 
 class DecideOut(BaseModel):
@@ -283,6 +311,8 @@ class DecideOut(BaseModel):
     event: EventOut
     # Text the client should send onward, depending on the action:
     #   send_transformed -> masked text; send_as_is/revert_original -> original.
+    #   revert_original with ``reverted`` -> masked text with only those
+    #   placeholders put back.
     # cancel -> null (nothing is sent).
     outgoing_text: Optional[str]
     # True only for send_transformed: the work item (pseudonym mapping) is kept

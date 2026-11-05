@@ -38,6 +38,9 @@ class WorkItem:
     remaining_count: int
     # Active policy version when /process ran (issue #49); logged on /decide.
     policy_version: Optional[int] = None
+    # Masked spans (local_ai MaskedSpan: type, raw value, placeholder), memory
+    # only; /decide turns them into event items without the values (#63).
+    spans: tuple = field(default=(), repr=False)
     created_at: float = field(default_factory=time.monotonic)
 
 
