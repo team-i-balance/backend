@@ -11,13 +11,28 @@ from typing import Optional
 
 from app.policy import ActivePolicy
 
-# Korean policy category -> detector type code.
+# Console item name (team-i-balance/web src/domain/seed.ts entities) -> detector
+# type code (local_ai/pseudonym.py _TYPE_LABELS). Only types the current
+# detector actually emits are listed.
+#
+# Console items with no detector type yet (ignored): 나이, 고객ID,
+# 프로젝트 코드명, 미공개 실적.
+# Note: 주민등록번호 -> ID_NUMBER also covers other ID numbers (e.g. driver's
+# licence) because the detector does not split them.
 _CATEGORY_TO_DETECTOR_TYPE = {
-    "사업자번호": "BUSINESS_NUMBER",
+    "이름": "NAME",
     "전화번호": "PHONE",
     "이메일": "EMAIL",
-    "API키": "API_KEY",
-    "토큰": "ACCESS_TOKEN",
+    "주소": "ADDRESS",
+    "생년월일": "DOB",
+    "계좌번호": "ACCOUNT",
+    "카드번호": "CARD",
+    "주민등록번호": "ID_NUMBER",
+    "API 키": "API_KEY",   # console spells it with a space
+    "API키": "API_KEY",    # legacy spelling, kept for older bundles
+    "비밀번호": "PASSWORD",
+    "사업자번호": "BUSINESS_NUMBER",
+    "토큰": "ACCESS_TOKEN",  # not a console item today; kept for compatibility
 }
 
 
