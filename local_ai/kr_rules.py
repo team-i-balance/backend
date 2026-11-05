@@ -262,7 +262,9 @@ _PW_PLACEHOLDER = re.compile(
 _URL_CRED_RE = re.compile(r'(?i)(?<![a-z0-9])[a-z][a-z0-9+.\-]*://[^:/\s@]+:(?P<pw>[^@\s/]+)@')
 # Natural Korean: "비밀번호는 qwer1234!야", "비밀번호를 "한글 암호"로"
 _KO_PW_RE = re.compile(
-    r'''(?:비밀번호|비번|패스워드|암호)\s*(?:은|는|이|가|를|을|도)?\s*(?P<sep>:|=|->|→|은|는)?\s*'''
+    # The label must end the word: '암호화=AES256' or '비밀번호정책=strict' is not a password field.
+    r'''(?:비밀번호|비번|패스워드|암호)(?:(?:은|는|이|가|를|을|도)(?![가-힣])|(?![가-힣A-Za-z0-9_]))'''
+    r'''\s*(?P<sep>:|=|->|→|은|는)?\s*'''
     r'''(?:"(?P<dq>[^"\n]+)"|'(?P<sq>[^'\n]+)'|`(?P<bq>[^`\n]+)`|(?P<v>[^\s"'`]+))'''
 )
 _HANGUL = re.compile(r'[가-힣]')

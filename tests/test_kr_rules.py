@@ -302,3 +302,21 @@ class KrRulesTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class KoreanPasswordLabelBoundaryTests(unittest.TestCase):
+    """PR #31 review: a word that merely starts with a password label is not a field."""
+
+    def test_longer_words_are_not_labels(self):
+        for text in ['암호화=AES256', '비밀번호정책=strict', '암호화 방식은 AES256이야', '비번변경 안내 메일 써줘']:
+            with LocalSession(Detector(None)) as s:
+                r = s.process(text)
+            self.assertNotIn('PASSWORD', r.detection_types, text)
+
+    def test_labels_with_particles_or_separators_still_detected(self):
+        for text, secret in [('비밀번호는 qwer1234!야', 'qwer1234!'), ('암호: Zx9!kk22', 'Zx9!kk22'),
+                             ('비번이 abc12345', 'abc12345'), ('패스워드=hunter2', 'hunter2')]:
+            with LocalSession(Detector(None)) as s:
+                r = s.process(text)
+            self.assertNotIn(secret, r.text, text)
+            self.assertIn('PASSWORD', r.detection_types, text)
