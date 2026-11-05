@@ -42,8 +42,9 @@ def insert_event(event: EventIn) -> dict:
                 created_at, request_id, grade, action, reason,
                 detection_confidence, detected_types, detected_count,
                 reverted, restored, content_hash, queue,
-                user_id, dept, target_ai, device_id, reason_text, items, is_test, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                user_id, dept, target_ai, device_id, reason_text, items, is_test, source,
+                policy_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -68,6 +69,7 @@ def insert_event(event: EventIn) -> dict:
                 items_json,
                 int(event.test),
                 event.source.value,
+                event.policy_version,
             ),
         )
         new_id = cur.lastrowid
@@ -142,16 +144,17 @@ def get_stats(
     # event-list page size. With the current enums it returns at most 48 groups.
     with get_conn() as conn:
         rows = conn.execute(f"""
-            SELECT action, grade, queue, COUNT(*) AS count,
+            SELECT action, grade, queue, policy_version, COUNT(*) AS count,
                    SUM(reverted = 1) AS reverted,
                    SUM(CASE WHEN reason = 'business_need' THEN 1 ELSE 0 END) AS evasion
-            FROM event_log {where} GROUP BY action, grade, queue
+            FROM event_log {where} GROUP BY action, grade, queue, policy_version
         """, params).fetchall()
 
     total = accepted = reverted = evasion = 0
     by_action = {action.value: 0 for action in Action}
     by_queue: dict[str, int] = {}
     by_grade: dict[str, int] = {}
+    by_version: dict[int | None, int] = {}
     for row in rows:
         count = row["count"]
         total += count
@@ -162,6 +165,8 @@ def get_stats(
         by_action[row["action"]] = by_action.get(row["action"], 0) + count
         by_queue[row["queue"]] = by_queue.get(row["queue"], 0) + count
         by_grade[row["grade"]] = by_grade.get(row["grade"], 0) + count
+        version = row["policy_version"]
+        by_version[version] = by_version.get(version, 0) + count
 
     return Stats(
         total=total,
@@ -171,4 +176,9 @@ def get_stats(
         by_queue=by_queue,
         by_grade=by_grade,
         by_action=by_action,
+        # Ascending versions, then "none" (events without a known version).
+        by_policy_version={
+            "none" if v is None else str(v): by_version[v]
+            for v in sorted(by_version, key=lambda v: (v is None, v or 0))
+        },
     )

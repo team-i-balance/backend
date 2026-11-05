@@ -61,7 +61,8 @@ GET /cases/INC-42
     "reverted": false,
     "restored": false,
     "content_hash": null,
-    "queue": "pre_warning"
+    "queue": "pre_warning",
+    "policy_version": 12
   },
   "close": {
     "conclusion": "violation",
@@ -92,6 +93,9 @@ GET /cases/INC-42
   `event.reason_at` 제출 시각으로 읽습니다. 제출 방법은 [직원 사유 API](event-reason-api.md)를 참고하세요.
   사유가 늦게 도착해도 기존 보안팀 결론과 처리 이력은 바뀌지 않습니다.
   선택 컨텍스트 `user_id`, `dept`, `target_ai`, `device_id`와 항목별 `items`도 함께 반환합니다.
+  `event.policy_version`은 그 입력을 처리할 때 적용 중이던 정책 버전(정수)입니다.
+  카드의 "전송 당시 정책 v12"에 그대로 쓰고, `null`(예전 이벤트·버전을 보내지 않은 클라이언트·
+  적용 중인 정책 없음)이면 표시하지 않습니다. 자세한 기준은 [로그 문서](log-stats-api.md#이벤트의-정책-버전)를 참고하세요.
   예전 이벤트의 컨텍스트는 `null`, `items`는 빈 배열입니다. `user_id` 등은 클라이언트가
   전달한 메타데이터이며 인증된 처리자 정보가 아닙니다. 직원 이름·원문을 만들어내지 않습니다.
 - `status`는 `open` 또는 `closed`, 열린 건의 `close`는 `null`입니다.

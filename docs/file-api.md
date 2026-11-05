@@ -235,6 +235,8 @@ curl -X POST 'http://localhost:8000/files/WORK_ID/restore' \
 - `request_id`는 파일 `work_id`, `grade`는 응답과 같은 등급, `detected_types`·`detected_count`는
   응답의 같은 필드(파일 전체에서 찾은 유형·곳 수)입니다. 파일 검사는 모델을 쓰므로
   `detection_confidence`는 `high`입니다.
+- `policy_version`은 검사 시작 때 고정해 탐지기에 적용한 활성 정책 버전입니다(없으면 `null`).
+  정책이 끈 유형은 파일에서도 찾지 않습니다.
 - `content_hash`는 올라온 파일 바이트의 SHA-256입니다. 원문 값, 파일 이름, 셀 위치는 저장하지 않습니다.
 - `FAILED`, 처리 후 연결이 끊겨 버린 작업, 서버 종료로 사라진 작업은 기록하지 않습니다.
 - 큐는 텍스트 이벤트와 같은 규칙(`app/rules.md` 4절)으로 정합니다. 지금 규칙에서는

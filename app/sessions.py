@@ -36,6 +36,8 @@ class WorkItem:
     grade: str
     detection_confidence: str
     remaining_count: int
+    # Active policy version when /process ran (issue #49); logged on /decide.
+    policy_version: Optional[int] = None
     created_at: float = field(default_factory=time.monotonic)
 
 

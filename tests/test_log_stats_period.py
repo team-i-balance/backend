@@ -49,6 +49,7 @@ def test_all_statistics_use_the_same_inclusive_period(client):
         "by_action": {"send_as_is": 1, "send_transformed": 1, "cancel": 1, "revert_original": 2},
         "by_grade": {"public_O": 1, "sensitive_S": 3, "confidential_C": 1},
         "by_queue": {"pre_warning": 3, "violation_candidate": 1, "detection_improve": 1},
+        "by_policy_version": {"none": 5},
     }
     assert len(events(client, **params)) == result["total"]
     assert stats(client)["total"] == 7  # No bounds retains all-time behavior.
@@ -91,6 +92,7 @@ def test_empty_window_returns_zero_counts_for_all_actions(client):
         "total": 0, "acceptance_rate": 0.0, "revert_rate": 0.0, "evasion_suspect": 0,
         "by_queue": {}, "by_grade": {},
         "by_action": {"send_as_is": 0, "send_transformed": 0, "cancel": 0, "revert_original": 0},
+        "by_policy_version": {},
     }
 
 

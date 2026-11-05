@@ -81,7 +81,8 @@ def process_text(body: ProcessIn):
 
     detector = _get_detector(body.rules_only)
     # Apply the active policy's type toggles to the (shared) detector.
-    apply_policy_to_detector(detector, policy_store.current())
+    active_policy = policy_store.current()
+    apply_policy_to_detector(detector, active_policy)
     if body.file_work_id is None:
         # The pseudonym mapping is per-work; the detector is shared.
         session = LocalSession(detector)
@@ -121,6 +122,8 @@ def process_text(body: ProcessIn):
         grade=grade.value,
         detection_confidence=confidence.value,
         remaining_count=len(result.remaining),
+        # The version whose toggles this detection used (issue #49).
+        policy_version=active_policy.version if active_policy is not None else None,
     )
 
     return ProcessOut(
@@ -151,6 +154,7 @@ def decide(body: DecideIn):
             detection_confidence=Confidence(item.detection_confidence),
             action=body.action,
             reason=body.reason,
+            policy_version=item.policy_version,
         )
         saved = crud.insert_event(event_in)
 
