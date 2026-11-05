@@ -7,6 +7,7 @@ from app.db import init_db
 from app.router import router as logs_router
 from app.process_router import router as process_router
 from app.file_router import router as file_router
+from app.policy_router import router as policy_router
 
 
 @asynccontextmanager
@@ -43,6 +44,7 @@ app.add_middleware(
 app.include_router(logs_router)
 app.include_router(process_router)
 app.include_router(file_router)
+app.include_router(policy_router)
 
 
 @app.get("/")
