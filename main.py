@@ -17,6 +17,9 @@ async def lifespan(app: FastAPI):
 
     store.start_sweeper()
     file_store.start()
+    from app.detectors import warm_up_in_background
+
+    warm_up_in_background()
     try:
         yield
     finally:

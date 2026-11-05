@@ -1,6 +1,9 @@
 """Shared lazy detector loading; each caller still owns its LocalSession."""
+import logging
 import os
 import threading
+
+log = logging.getLogger(__name__)
 
 MODEL_DIR_ENV = "LOCAL_PII_MODEL_DIR"
 # Optional confidential-policy SLM (local_ai/slm) folder and policy JSON. Either model
@@ -30,6 +33,31 @@ def get_detector(rules_only: bool = False):
             else:
                 _detectors[rules_only] = Detector(model_dir)
         return _detectors[rules_only]
+
+
+def warm_up_in_background() -> threading.Thread | None:
+    """Load the full detector (and run one fixed sentence) at startup when a model is configured.
+
+    Loading the SLM takes several seconds, which otherwise lands on the first user request after
+    every deploy. Runs in a daemon thread so startup and /health stay fast; requests arriving
+    meanwhile wait on the same lock and reuse the loaded detector. Failures are only logged:
+    requests still report MODEL_UNAVAILABLE / 422 exactly as before.
+    """
+    if not os.getenv(MODEL_DIR_ENV) and not os.getenv(SLM_DIR_ENV):
+        return None
+
+    def run():
+        try:
+            get_detector(False).detect("모델 예열용 고정 문장입니다.")
+            log.info("detector warm-up finished")
+        except Exception:
+            # Never include exception text: it could carry paths or model details.
+            log.warning("detector warm-up failed; it will be retried on the first request")
+            reset_detectors()
+
+    thread = threading.Thread(target=run, name="detector-warm-up", daemon=True)
+    thread.start()
+    return thread
 
 
 def reset_detectors() -> None:
