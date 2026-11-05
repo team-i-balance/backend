@@ -1,15 +1,27 @@
 """Use the team's on-device PII model for one XLSX document."""
 
+from collections.abc import Callable, Sequence
+
 from local_ai.pipeline import LocalSession
 
-from .sanitizer import Decision, ResidualPIIError
+from .sanitizer import Decision, Grade, ResidualPIIError
+
+
+def _default_grade(detected_types: Sequence[str]) -> Grade:
+    return "S" if detected_types else "O"
 
 
 class LocalPIIProcessor:
-    def __init__(self, session: LocalSession):
+    def __init__(
+        self,
+        session: LocalSession,
+        *,
+        classify: Callable[[Sequence[str]], Grade] = _default_grade,
+    ):
         if not session.detector.model_enabled:
             raise ValueError("XLSX PII processing requires a local model")
         self.session = session
+        self.classify = classify
 
     def process(self, session_id, segments):
         decisions = {}
@@ -23,7 +35,7 @@ class LocalPIIProcessor:
                     raise ResidualPIIError()
                 checked[segment.text] = result
             result = checked[segment.text]
-            grade = "S" if result.detection_types else "O"
+            grade = self.classify(result.detection_types)
             decisions[segment.id] = Decision(grade, result.text if segment.exportable else None)
         return decisions
 

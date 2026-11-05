@@ -23,12 +23,15 @@ the LocalSession.
 """
 from __future__ import annotations
 
-import os
-import threading
-
 from fastapi import APIRouter, HTTPException
 
 from app import crud
+from app.detectors import (
+    MODEL_DIR_ENV,
+    MissingModelConfiguration,
+    get_detector,
+    reset_detectors as _reset_detectors,
+)
 from app.grading import decide_grade
 from app.ingest import build_event, coverage_to_confidence
 from app.schemas import (
@@ -44,49 +47,21 @@ from app.schemas import (
 )
 from app.sessions import store
 
-# Optional local model directory. If unset, only rules_only mode is available.
-MODEL_DIR_ENV = "LOCAL_PII_MODEL_DIR"
-
 router = APIRouter(prefix="/process", tags=["process"])
-
-# Shared detectors, built lazily once per mode and reused across requests.
-_detectors: dict[bool, object] = {}
-_detector_lock = threading.Lock()
 
 
 def _get_detector(rules_only: bool):
-    """Return a shared Detector for the given mode, building it once."""
-    # Imported lazily so the logging module works even if local_ai's optional
-    # model dependencies are absent.
-    from local_ai.detector import Detector
-
-    with _detector_lock:
-        cached = _detectors.get(rules_only)
-        if cached is not None:
-            return cached
-
-        if rules_only:
-            detector = Detector(None)
-        else:
-            model_dir = os.getenv(MODEL_DIR_ENV)
-            if not model_dir:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"full detection requires {MODEL_DIR_ENV} to be set on "
-                        "the server; use rules_only=true otherwise"
-                    ),
-                )
-            detector = Detector(model_dir)
-
-        _detectors[rules_only] = detector
-        return detector
-
-
-def _reset_detectors() -> None:
-    """Drop cached detectors (used by tests)."""
-    with _detector_lock:
-        _detectors.clear()
+    """Keep the existing text API's configuration error contract."""
+    try:
+        return get_detector(rules_only)
+    except MissingModelConfiguration:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"full detection requires {MODEL_DIR_ENV} to be set on "
+                "the server; use rules_only=true otherwise"
+            ),
+        ) from None
 
 
 @router.post("", response_model=ProcessOut)

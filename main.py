@@ -6,17 +6,21 @@ import os
 from app.db import init_db
 from app.router import router as logs_router
 from app.process_router import router as process_router
+from app.file_router import router as file_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     from app.sessions import store
+    from app.file_store import store as file_store
 
     store.start_sweeper()
+    file_store.start()
     try:
         yield
     finally:
+        file_store.close()
         store.stop_sweeper()
 
 
@@ -38,6 +42,7 @@ app.add_middleware(
 
 app.include_router(logs_router)
 app.include_router(process_router)
+app.include_router(file_router)
 
 
 @app.get("/")
