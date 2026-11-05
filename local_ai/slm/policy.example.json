@@ -1,0 +1,216 @@
+{
+ "company": "모아랩스(가상 회사, B2B 소프트웨어·IoT 기기 제조)",
+ "note": "예시 정책(가상 회사). 보안팀 콘솔이 서명해 배포하는 정책 파일로 바꿔 끼운다. label 은 15자 이내 명사구, grade 는 S|C",
+ "rules": [
+  {
+   "id": "R01",
+   "label": "미공개 프로젝트명",
+   "description": "아직 외부에 발표하지 않은 신제품·신규 사업의 내부 코드명이나 프로젝트 이름",
+   "grade": "C",
+   "action": "태그"
+  },
+  {
+   "id": "R02",
+   "label": "미공개 출시 일정",
+   "description": "발표 전 제품·서비스의 출시일, 오픈 일정, 런칭 시점",
+   "grade": "S",
+   "action": "일반화"
+  },
+  {
+   "id": "R03",
+   "label": "미공개 실적 수치",
+   "description": "공시 전 매출, 영업이익, 순이익, 성장률 등 회사 실적 숫자",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "R04",
+   "label": "인수합병·투자 협상",
+   "description": "진행 중인 인수, 합병, 지분 투자, 매각 협상의 대상과 조건",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "R05",
+   "label": "계약 금액",
+   "description": "고객사·파트너와의 계약 금액, 단가, 할인율 등 거래 조건",
+   "grade": "S",
+   "action": "일반화"
+  },
+  {
+   "id": "R06",
+   "label": "비공개 고객사",
+   "description": "거래 사실이 공개되지 않은 고객사 이름",
+   "grade": "S",
+   "action": "대체"
+  },
+  {
+   "id": "R07",
+   "label": "인사 평가·징계",
+   "description": "특정 직원의 인사 평가 등급, 징계, 저성과자 지정 내용",
+   "grade": "S",
+   "action": "삭제"
+  },
+  {
+   "id": "R08",
+   "label": "개인 급여",
+   "description": "특정 직원의 연봉, 성과급, 스톡옵션 수량",
+   "grade": "S",
+   "action": "일반화"
+  },
+  {
+   "id": "R09",
+   "label": "구조조정 계획",
+   "description": "발표 전 조직 개편, 인력 감축, 희망퇴직, 사업부 철수 계획",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "R10",
+   "label": "내부 시스템 주소",
+   "description": "사내 서버 호스트명, 내부 전용 URL, 사내망 시스템 이름과 접속 경로",
+   "grade": "S",
+   "action": "태그"
+  },
+  {
+   "id": "R11",
+   "label": "미패치 취약점",
+   "description": "아직 고치지 않은 자사 제품·시스템의 보안 취약점과 공격 방법",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "R12",
+   "label": "핵심 공정·알고리즘",
+   "description": "영업비밀인 제조 공정 조건, 배합비, 핵심 알고리즘의 파라미터",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "R13",
+   "label": "원가·마진",
+   "description": "제품 원가, 마진율, 부품 단가 등 수익 구조 숫자",
+   "grade": "S",
+   "action": "일반화"
+  },
+  {
+   "id": "R14",
+   "label": "입찰 전략",
+   "description": "입찰·제안 시 써낼 가격, 경쟁사 대응 전략",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "R15",
+   "label": "소송 대응",
+   "description": "진행 중이거나 예상되는 소송·분쟁의 대응 전략, 합의 조건",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "R16",
+   "label": "미공개 특허",
+   "description": "출원 전이거나 공개 전인 발명·특허의 핵심 내용",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "R17",
+   "label": "협력사 정보",
+   "description": "부품·외주 협력사 이름과 공급 단가, 공급 물량",
+   "grade": "S",
+   "action": "대체"
+  },
+  {
+   "id": "R18",
+   "label": "경영 회의 결정",
+   "description": "경영진 회의에서 내린 비공개 의사결정과 논의 내용",
+   "grade": "S",
+   "action": "삭제"
+  },
+  {
+   "id": "R19",
+   "label": "채용 계획",
+   "description": "공고 전 채용 규모, 채용 예정 포지션, 채용 예산",
+   "grade": "S",
+   "action": "일반화"
+  },
+  {
+   "id": "R20",
+   "label": "감사 지적",
+   "description": "내부·외부 감사에서 지적받은 사항과 미조치 내용",
+   "grade": "S",
+   "action": "삭제"
+  },
+  {
+   "id": "R21",
+   "label": "대외비 문서 내용",
+   "description": "대외비, Confidential, 사내한정 등 등급이 표시된 문서에서 옮긴 내용",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "R22",
+   "label": "인프라 구성",
+   "description": "데이터센터 위치, 서버 대수, 네트워크 구성, 클라우드 계정 구조",
+   "grade": "S",
+   "action": "일반화"
+  },
+  {
+   "id": "H01",
+   "label": "이사회 안건",
+   "description": "의결 전 이사회 안건과 표결 예정 내용",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "H02",
+   "label": "미공개 품질 결함",
+   "description": "외부에 알리지 않은 제품 결함, 리콜 검토, 불량률",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "H03",
+   "label": "고객 해지 예정",
+   "description": "계약 해지·이탈이 예상되는 고객과 그 사유",
+   "grade": "S",
+   "action": "대체"
+  },
+  {
+   "id": "H04",
+   "label": "임원 일정",
+   "description": "임원의 비공개 출장, 미팅 일정과 동선",
+   "grade": "S",
+   "action": "삭제"
+  },
+  {
+   "id": "H05",
+   "label": "가격 인상 계획",
+   "description": "고객에게 알리기 전 가격 인상 폭과 시점",
+   "grade": "S",
+   "action": "일반화"
+  },
+  {
+   "id": "H06",
+   "label": "미발표 연구 결과",
+   "description": "논문·발표 전 연구 실험 결과와 성능 수치",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "H07",
+   "label": "NDA 기술 사양",
+   "description": "비밀유지계약으로 받은 파트너사의 기술 사양과 설계",
+   "grade": "C",
+   "action": "삭제"
+  },
+  {
+   "id": "H08",
+   "label": "장애 원인 분석",
+   "description": "외부 공개 전 서비스 장애의 내부 원인 분석과 책임 소재",
+   "grade": "S",
+   "action": "삭제"
+  }
+ ]
+}

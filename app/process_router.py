@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException
 from app import crud
 from app.detectors import (
     MODEL_DIR_ENV,
+    SLM_DIR_ENV,
     MissingModelConfiguration,
     get_detector,
     reset_detectors as _reset_detectors,
@@ -58,8 +59,8 @@ def _get_detector(rules_only: bool):
         raise HTTPException(
             status_code=400,
             detail=(
-                f"full detection requires {MODEL_DIR_ENV} to be set on "
-                "the server; use rules_only=true otherwise"
+                f"full detection requires {MODEL_DIR_ENV} or {SLM_DIR_ENV} to be set "
+                "on the server; use rules_only=true otherwise"
             ),
         ) from None
 
